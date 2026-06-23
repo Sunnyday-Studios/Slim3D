@@ -48,6 +48,77 @@
         font-size: 12px; opacity: 0.8; max-width: 320px; text-align: right;
       }
       #status.error { color: #ff8e8e; opacity: 1; }
+
+      /* ---- Slime Lab panel ---- */
+      #slimeLab {
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 300px; max-width: calc(100vw - 32px);
+        padding: 8px 10px;
+      }
+      #slHeader {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 8px;
+      }
+      #slHeader h2 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: 0.3px; }
+      #slHeader h2 span { color: #56d1c4; }
+      #slToggle {
+        all: unset; cursor: pointer; font-size: 16px; line-height: 1;
+        padding: 4px 8px; border-radius: 8px;
+        background: rgba(86, 209, 196, 0.16); border: 1px solid rgba(86, 209, 196, 0.4);
+        color: #aef4ea;
+      }
+      #slBody {
+        margin-top: 10px;
+        max-height: min(70vh, 560px);
+        overflow-y: auto;
+        display: flex; flex-direction: column; gap: 12px;
+        -webkit-overflow-scrolling: touch;
+      }
+      #slBody.collapsed { display: none; }
+
+      .sl-group { display: flex; flex-direction: column; gap: 6px; }
+      .sl-group > .sl-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; opacity: 0.65; }
+
+      /* TYPE segmented buttons */
+      #slType { display: flex; flex-wrap: wrap; gap: 6px; }
+      #slType button {
+        all: unset; cursor: pointer; text-align: center; flex: 1 1 auto;
+        min-width: 56px; font-size: 12px; padding: 7px 8px; border-radius: 8px;
+        background: rgba(86, 209, 196, 0.12); border: 1px solid rgba(86, 209, 196, 0.32);
+        color: #aef4ea;
+      }
+      #slType button.active {
+        background: rgba(86, 209, 196, 0.40); border-color: rgba(120, 240, 225, 0.8);
+        color: #ffffff; font-weight: 600;
+      }
+
+      /* swatches */
+      #slSwatches { display: flex; flex-wrap: wrap; gap: 6px; }
+      .sl-swatch {
+        all: unset; cursor: pointer; width: 24px; height: 24px; border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.35); box-sizing: border-box;
+      }
+      .sl-color-row { display: flex; align-items: center; gap: 8px; }
+      .sl-color-row input[type=color] {
+        width: 36px; height: 28px; padding: 0; border: none; background: none; cursor: pointer;
+      }
+
+      /* sliders */
+      .sl-slider { display: flex; flex-direction: column; gap: 2px; }
+      .sl-slider .sl-row { display: flex; justify-content: space-between; font-size: 12px; opacity: 0.85; }
+      .sl-slider input[type=range] { width: 100%; accent-color: #56d1c4; height: 24px; }
+
+      .sl-foam-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+      .sl-foam-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+      .sl-foam-row input[type=range] { flex: 1 1 auto; accent-color: #56d1c4; height: 24px; }
+
+      /* Mobile: dock to top, default collapsed (set via .collapsed on #slBody in markup) */
+      @media (max-width: 640px) {
+        #slimeLab { top: 12px; width: calc(100vw - 24px); }
+        #brand { display: none; } /* free up room on small screens */
+      }
     </style>
   </head>
   <body>
@@ -61,6 +132,65 @@
     <div id="stats" class="panel">
       <div>FPS <b id="fps">—</b></div>
       <div>Particles <b id="count">—</b></div>
+    </div>
+
+    <!-- ===== Slime Lab ===== -->
+    <div id="slimeLab" class="panel">
+      <div id="slHeader">
+        <h2>Slime<span>Lab</span></h2>
+        <button id="slToggle" aria-label="Toggle Slime Lab" aria-expanded="false" title="Toggle panel">▣</button>
+      </div>
+      <!-- default-collapsed on load; JS toggle flips .collapsed -->
+      <div id="slBody" class="collapsed">
+
+        <div class="sl-group">
+          <div class="sl-label">Type</div>
+          <div id="slType"><!-- buttons injected by controls.ts --></div>
+        </div>
+
+        <div class="sl-group">
+          <div class="sl-label">Color</div>
+          <div id="slSwatches"><!-- swatches injected by controls.ts --></div>
+          <div class="sl-color-row">
+            <input type="color" id="slColor" value="#f24c8c" />
+            <span style="font-size:12px;opacity:0.7">Custom color</span>
+          </div>
+        </div>
+
+        <div class="sl-group">
+          <div class="sl-label">Finish &amp; Feel</div>
+
+          <div class="sl-slider">
+            <div class="sl-row"><span>Finish (matte ↔ glossy)</span></div>
+            <input type="range" id="slGloss" min="0" max="1" step="0.01" value="0.95" />
+          </div>
+          <div class="sl-slider">
+            <div class="sl-row"><span>Squish (firmness)</span></div>
+            <input type="range" id="slMu" min="1" max="6" step="0.1" value="4" />
+          </div>
+          <div class="sl-slider">
+            <div class="sl-row"><span>Hold (stretch)</span></div>
+            <input type="range" id="slLambda" min="2" max="12" step="0.1" value="8" />
+          </div>
+          <div class="sl-slider">
+            <div class="sl-row"><span>Flow (ooze)</span></div>
+            <input type="range" id="slFlow" min="0.1" max="1.5" step="0.05" value="0.6" />
+          </div>
+          <div class="sl-slider">
+            <div class="sl-row"><span>Gravity (sag)</span></div>
+            <input type="range" id="slGravity" min="-0.6" max="0" step="0.01" value="-0.3" />
+          </div>
+        </div>
+
+        <div class="sl-group">
+          <div class="sl-label">Foam / Beads</div>
+          <div class="sl-foam-row">
+            <label><input type="checkbox" id="slFoamOn" /> Foam</label>
+            <input type="range" id="slFoamAmt" min="0.05" max="0.95" step="0.05" value="0.5" disabled />
+          </div>
+        </div>
+
+      </div>
     </div>
 
     <div id="controls" class="panel">

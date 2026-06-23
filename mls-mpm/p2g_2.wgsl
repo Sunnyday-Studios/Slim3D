@@ -11,12 +11,23 @@ struct Cell {
     mass: i32,
 }
 
+// Runtime material params (live sliders / type presets). std140 16B.
+// Layout MUST match mls-mpm.ts materialView Float32Array([mu, lambda, viscosity, gravity]).
+struct Material {
+    mu: f32,         // @0  shear modulus
+    lambda: f32,     // @4  first Lame parameter
+    viscosity: f32,  // @8  viscous damping
+    gravity: f32,    // @12 (unused here; shared layout with updateGrid)
+}
+
 override fixed_point_multiplier: f32;
-override dynamic_viscosity: f32;
 override dt: f32;
-override elastic_mu: f32;      // shear modulus
-override elastic_lambda: f32;  // first Lame parameter
 override p_vol: f32;           // constant per-particle material volume (NOT 1/density)
+
+@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read_write> cells: array<Cell>;
+@group(0) @binding(2) var<uniform> init_box_size: vec3f;
+@group(0) @binding(3) var<uniform> mat: Material;
 
 fn encodeFixedPoint(floating_point: f32) -> i32 {
 	return i32(floating_point * fixed_point_multiplier);
@@ -80,10 +91,6 @@ fn polar_R(F: mat3x3f) -> mat3x3f {
     return R;
 }
 
-@group(0) @binding(0) var<storage, read> particles: array<Particle>;
-@group(0) @binding(1) var<storage, read_write> cells: array<Cell>;
-@group(0) @binding(2) var<uniform> init_box_size: vec3f;
-
 @compute @workgroup_size(64)
 fn p2g_2(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x < arrayLength(&particles)) {
@@ -108,19 +115,19 @@ fn p2g_2(@builtin(global_invocation_id) id: vec3<u32>) {
         let Ft: mat3x3f = transpose(F);
         let F_minus_R: mat3x3f = F - R;
         // 2*mu*(F-R)*F^T
-        var stress: mat3x3f = (2.0 * elastic_mu) * (F_minus_R * Ft);
+        var stress: mat3x3f = (2.0 * mat.mu) * (F_minus_R * Ft);
         // + lambda*J*(J-1)*I   (volumetric term; clamp J to avoid NaN from inverted F)
         let Jc: f32 = max(J, 0.1);
-        let vol_coeff: f32 = elastic_lambda * Jc * (Jc - 1.0);
+        let vol_coeff: f32 = mat.lambda * Jc * (Jc - 1.0);
         stress[0].x += vol_coeff;
         stress[1].y += vol_coeff;
         stress[2].z += vol_coeff;
 
-        // + viscous damping term: dynamic_viscosity * (C + C^T)
+        // + viscous damping term: viscosity * (C + C^T)
         // (energy loss -> slime sags and settles instead of ringing forever; keep low)
         let dudv: mat3x3f = particle.C;
         let strain: mat3x3f = dudv + transpose(dudv);
-        stress += dynamic_viscosity * strain;
+        stress += mat.viscosity * strain;
 
         // Constant material volume (NOT 1/density). Same factor-4 (1/(B-spline
         // 2nd moment)=1/4 with dx=1) and -..*dt as the upstream scatter.

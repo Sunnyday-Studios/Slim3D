@@ -29,6 +29,18 @@ export class FluidRenderer {
     fluidBindGroup: GPUBindGroup
     sphereBindGroup: GPUBindGroup
 
+    // Runtime slime look uniform (32B): { color vec3f@0, gloss@12, opacity@16,
+    // foam@20, pad@24, pad@28 }. Bound at binding 5 of the fluid pipeline so the
+    // panel changes color/finish/foam live. setStyle() writes it.
+    styleUniformBuffer: GPUBuffer
+    private styleValues = new ArrayBuffer(32)
+    private styleViews = {
+        color:   new Float32Array(this.styleValues, 0, 3),
+        gloss:   new Float32Array(this.styleValues, 12, 1),
+        opacity: new Float32Array(this.styleValues, 16, 1),
+        foam:    new Float32Array(this.styleValues, 20, 1),
+        // bytes 24..31 are padding (std140 16-byte alignment)
+    }
 
     device: GPUDevice
     constructor(
@@ -246,6 +258,17 @@ export class FluidRenderer {
         device.queue.writeBuffer(filterXUniformBuffer, 0, filterXUniformsValues);
         device.queue.writeBuffer(filterYUniformBuffer, 0, filterYUniformsValues);
 
+        // 32-byte runtime style uniform. Seeded neutral here (single source of truth
+        // for the default LOOK is controls.ts PRESETS[DEFAULT_PRESET_INDEX], which the
+        // Controls ctor pushes synchronously before the first frame). This seed only
+        // covers the degenerate case of a renderer constructed without Controls.
+        this.styleUniformBuffer = device.createBuffer({
+            label: 'slime style uniform buffer',
+            size: this.styleValues.byteLength, // 32
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        })
+        this.setStyle([0.5, 0.5, 0.5], 0.95, 0.85, 0.0)
+
         // bindGroup
         this.depthMapBindGroup = device.createBindGroup({
             label: 'depth map bind group', 
@@ -315,6 +338,7 @@ export class FluidRenderer {
               { binding: 2, resource: { buffer: renderUniformBuffer } },
               { binding: 3, resource: this.thicknessTextureView },
               { binding: 4, resource: cubemapTextureView }, 
+              { binding: 5, resource: { buffer: this.styleUniformBuffer } },
             ],
         })
 
@@ -326,6 +350,17 @@ export class FluidRenderer {
                 { binding: 1, resource: { buffer: renderUniformBuffer }},
             ]
         })
+    }
+
+    // Write the 32B runtime style uniform. color is linear-ish 0..1 rgb; gloss,
+    // opacity, foam are each clamped 0..1. Live — takes effect next frame.
+    setStyle(color: number[], gloss: number, opacity: number, foam: number) {
+        const c01 = (v: number) => Math.min(1, Math.max(0, v))
+        this.styleViews.color.set([c01(color[0]), c01(color[1]), c01(color[2])])
+        this.styleViews.gloss[0] = c01(gloss)
+        this.styleViews.opacity[0] = c01(opacity)
+        this.styleViews.foam[0] = c01(foam)
+        this.device.queue.writeBuffer(this.styleUniformBuffer, 0, this.styleValues)
     }
 
 

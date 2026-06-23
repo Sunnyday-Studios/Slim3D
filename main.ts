@@ -6,13 +6,14 @@
 // Milestone 1 (this file): viscoelastic ("slime") material — per-particle
 // deformation gradient F + fixed-corotated elastic stress (polar decomposition,
 // no SVD) + viscous damping, replacing the upstream Newtonian model. Pointer-poke
-// interaction and plasticity (M1.5) land in later milestones.
+// interaction (M2) and the Slime Lab control panel (M3) layer on top.
 
 import { MLSMPMSimulator } from './mls-mpm/mls-mpm'
 import { renderUniformsViews, renderUniformsValues, numParticlesMax } from './common'
 import { FluidRenderer } from './render/fluidRender'
 import { Camera } from './camera'
 import { InputController } from './input'
+import { Controls } from './controls'
 
 const statusEl = document.getElementById('status') as HTMLDivElement
 function setStatus(msg: string, isError = false) {
@@ -116,10 +117,18 @@ async function main() {
   // the camera no longer binds its own listeners. update() pushes the poke force.
   const input = new InputController(canvas, camera, simulator)
 
+  // M3: Slime Lab control panel (separate DOM; never pokes the canvas). Owns the
+  // live Material/Style uniforms via sim.setMaterial / renderer.setStyle, and
+  // applies the default TYPE preset on construction.
+  const controls = new Controls(simulator, renderer)
+
   function resetBlob() {
     simulator.reset(NUM_PARTICLES, INIT_BOX)
     camera.reset(canvas, INIT_DISTANCE, [INIT_BOX[0] / 2, INIT_BOX[1] / 4, INIT_BOX[2] / 2], FOV, ZOOM_RATE)
     ;(document.getElementById('count') as HTMLElement).textContent = simulator.numParticles.toLocaleString()
+    // reset() re-defaults the material in the sim; re-assert the panel's active
+    // type so a reset keeps the chosen slime look/feel.
+    controls.reapply()
   }
   resetBlob()
 

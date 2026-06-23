@@ -5,12 +5,22 @@ struct Cell {
     mass: i32, 
 }
 
+// Runtime material params (shared 16B layout with p2g_2's Material). Only
+// .gravity is read here; the other three are present so the same buffer binds.
+struct Material {
+    mu: f32,         // @0
+    lambda: f32,     // @4
+    viscosity: f32,  // @8
+    gravity: f32,    // @12  per-step gravity acceleration (negative = down)
+}
+
 override fixed_point_multiplier: f32; 
 override dt: f32; 
 
 @group(0) @binding(0) var<storage, read_write> cells: array<Cell>;
 @group(0) @binding(1) var<uniform> real_box_size: vec3f;
 @group(0) @binding(2) var<uniform> init_box_size: vec3f;
+@group(0) @binding(3) var<uniform> mat: Material;
 
 fn encodeFixedPoint(floating_point: f32) -> i32 {
 	return i32(floating_point * fixed_point_multiplier);
@@ -31,7 +41,7 @@ fn updateGrid(@builtin(global_invocation_id) id: vec3<u32>) {
             );
             float_v /= decodeFixedPoint(cells[id.x].mass);
             cells[id.x].vx = encodeFixedPoint(float_v.x);
-            cells[id.x].vy = encodeFixedPoint(float_v.y + -0.3 * dt);
+            cells[id.x].vy = encodeFixedPoint(float_v.y + mat.gravity * dt);
             cells[id.x].vz = encodeFixedPoint(float_v.z);
 
             var x: i32 = i32(id.x) / i32(init_box_size.z) / i32(init_box_size.y);

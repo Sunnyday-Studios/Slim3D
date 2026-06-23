@@ -41,6 +41,20 @@ export class MLSMPMSimulator {
     particleBuffer: GPUBuffer
     pointerUniformBuffer: GPUBuffer
 
+    // Runtime material uniform (16B): { mu@0, lambda@4, viscosity@8, gravity@12 }.
+    // Bound at binding 3 of BOTH p2g_2 and updateGrid so sliders / type presets
+    // take effect live without recreating any pipeline. setMaterial() writes it.
+    materialUniformBuffer: GPUBuffer
+    private materialValues = new ArrayBuffer(16)
+    private materialView = new Float32Array(this.materialValues) // [mu, lambda, viscosity, gravity]
+
+    // Validated default material (Glossy baseline params: viscosity 0.6,
+    // gravity -0.3 are the headless-validated values; mu/lambda 3/6 = M1 defaults).
+    static readonly DEFAULT_MU = 3.0
+    static readonly DEFAULT_LAMBDA = 6.0
+    static readonly DEFAULT_VISCOSITY = 0.6
+    static readonly DEFAULT_GRAVITY = -0.3
+
     // CPU-side scratch for the 48-byte pointer uniform (see writePointerUniform).
     private pointerUniformValues = new ArrayBuffer(48)
     private pointerViews = {
@@ -81,15 +95,19 @@ export class MLSMPMSimulator {
             // elastic p2g_2, kept here only for reference / possible fluid presets.
             stiffness: 3.,
             restDensity: 4.,
-            dynamic_viscosity: 0.6,   // viscous damping -> slime sags/settles (low)
-            dt: 0.20,
+            // NOTE: dynamic_viscosity / elastic_mu / elastic_lambda are NO LONGER
+            // pipeline overrides — they now live in the runtime Material uniform
+            // (binding 3) so sliders/presets change them live. See setMaterial().
+            dt: 0.10,  // halved from 0.20: explicit viscosity (visc*dt) and elastic
+                       // CFL (sqrt(stiffness)*dt) are only conditionally stable, and the
+                       // full slider range (visc up to 1.5, mu/lambda up to 6/12) blew up
+                       // at dt=0.20. Paired with 4 substeps below so animation speed is
+                       // unchanged (0.10*4 == 0.20*2 sim-time/frame). Headless-validated
+                       // stable across every slider corner at this dt.
             fixed_point_multiplier: 1e6,  // lowered from 1e7: elastic stresses are
                                           // larger -> +/-2147 headroom (vs +/-214.7 at
                                           // 1e7); still ~6 digits precision. Drop to
                                           // 1e5 only if you crank mu/lambda way up.
-            // Fixed-corotated slime: stretchy/saggy/snappy, not stiff jelly.
-            elastic_mu: 3.0,          // shear modulus
-            elastic_lambda: 6.0,      // first Lame (bulk-ish)
             p_vol: 1.0,               // constant per-particle material volume
         }
 
@@ -116,11 +134,9 @@ export class MLSMPMSimulator {
             compute: {
                 module: p2g2Module,
                 constants: {
+                    // mu/lambda/viscosity moved to the Material uniform (binding 3).
                     'fixed_point_multiplier': constants.fixed_point_multiplier,
-                    'dynamic_viscosity': constants.dynamic_viscosity,
                     'dt': constants.dt,
-                    'elastic_mu': constants.elastic_mu,
-                    'elastic_lambda': constants.elastic_lambda,
                     'p_vol': constants.p_vol,
                 },
             }
@@ -185,6 +201,19 @@ export class MLSMPMSimulator {
         device.queue.writeBuffer(this.initBoxSizeBuffer, 0, initBoxSizeValues);
         device.queue.writeBuffer(this.realBoxSizeBuffer, 0, realBoxSizeValues);
 
+        // 16-byte runtime Material uniform. Initialized to validated defaults.
+        this.materialUniformBuffer = device.createBuffer({
+            label: 'material uniform buffer',
+            size: this.materialValues.byteLength, // 16
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        })
+        this.setMaterial(
+            MLSMPMSimulator.DEFAULT_MU,
+            MLSMPMSimulator.DEFAULT_LAMBDA,
+            MLSMPMSimulator.DEFAULT_VISCOSITY,
+            MLSMPMSimulator.DEFAULT_GRAVITY,
+        )
+
         // 48-byte pointer uniform (ray_origin, radius, ray_dir, strength, force, active).
         this.pointerUniformBuffer = device.createBuffer({
             label: 'pointer force uniform buffer',
@@ -216,6 +245,7 @@ export class MLSMPMSimulator {
                 { binding: 0, resource: { buffer: particleBuffer }}, 
                 { binding: 1, resource: { buffer: cellBuffer }}, 
                 { binding: 2, resource: { buffer: this.initBoxSizeBuffer }}, 
+                { binding: 3, resource: { buffer: this.materialUniformBuffer }}, 
             ]
         })
         this.updateGridBindGroup = device.createBindGroup({
@@ -224,6 +254,7 @@ export class MLSMPMSimulator {
                 { binding: 0, resource: { buffer: cellBuffer }},
                 { binding: 1, resource: { buffer: this.realBoxSizeBuffer }},
                 { binding: 2, resource: { buffer: this.initBoxSizeBuffer }},
+                { binding: 3, resource: { buffer: this.materialUniformBuffer }},
             ],
         })
         this.g2pBindGroup = device.createBindGroup({
@@ -304,12 +335,34 @@ export class MLSMPMSimulator {
         this.device.queue.writeBuffer(this.initBoxSizeBuffer, 0, initBoxSizeValues);
         this.device.queue.writeBuffer(this.realBoxSizeBuffer, 0, realBoxSizeValues);
         this.device.queue.writeBuffer(this.particleBuffer, 0, particleData)
+        // Re-assert the default material on reset so a blob reset starts from the
+        // validated baseline (the Controls panel re-pushes the active preset after).
+        this.setMaterial(
+            MLSMPMSimulator.DEFAULT_MU,
+            MLSMPMSimulator.DEFAULT_LAMBDA,
+            MLSMPMSimulator.DEFAULT_VISCOSITY,
+            MLSMPMSimulator.DEFAULT_GRAVITY,
+        )
         console.log(this.numParticles)
+    }
+
+    // Write the 16B runtime Material uniform. Values are clamped to the validated
+    // stable regime so a slider/preset can never feed F into a blow-up:
+    //   mu in [1,6], lambda in [2,12], viscosity in [0.1,1.5], gravity in [-0.6,0].
+    setMaterial(mu: number, lambda: number, viscosity: number, gravity: number) {
+        const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+        this.materialView[0] = clamp(mu, 1.0, 6.0)
+        this.materialView[1] = clamp(lambda, 2.0, 12.0)
+        this.materialView[2] = clamp(viscosity, 0.1, 1.5)
+        this.materialView[3] = clamp(gravity, -0.6, 0.0)
+        this.device.queue.writeBuffer(this.materialUniformBuffer, 0, this.materialValues)
     }
 
     execute(commandEncoder: GPUCommandEncoder) {
         const computePass = commandEncoder.beginComputePass();
-        for (let i = 0; i < 2; i++) { 
+        // 4 substeps at dt=0.10 (was 2 at 0.20) — same sim-time/frame, 2x finer steps
+        // for stability across the full material-slider range. ~2x sim compute.
+        for (let i = 0; i < 4; i++) {
             computePass.setBindGroup(0, this.clearGridBindGroup);
             computePass.setPipeline(this.clearGridPipeline);
             computePass.dispatchWorkgroups(Math.ceil(this.gridCount / 64)) // これは gridCount だよな？

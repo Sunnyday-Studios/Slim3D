@@ -12,6 +12,10 @@ const STRUCT = 128, FLOATS = 32, CELL = 16, GRIDS = 64;
 const FP = 1e6, DT = 0.10;                 // matches live (4 substeps below)
 const BOX = [40, 30, 60];
 const N_REQ = 20000, SETTLE = 120, PRESS = 160, TAP = 30;
+// Separation probe radius: horizontal disc around the blob's OWN centroid used to
+// measure central density (a tear leaves a VOID there; a coherent flatten stays a
+// dense peak). See stats() pass 2.
+const CORE_R = 6.0;
 // Material uniform is 32B now: {mu,lambda,viscosity,gravity,plasticity,pad,pad,pad}.
 // plasticity 0.55 so a press leaves a PERMANENT set; gravity kept LOW (-0.12) so the
 // plastic blob does NOT fully slump under its own weight during the settle (which
@@ -129,6 +133,7 @@ async function stats() {
   let nan = 0, maxP = 0, maxF = 0;
   let minY = 1e9, maxY = -1e9;
   let sx = 0, sxx = 0, sz = 0, szz = 0, cnt = 0;
+  // Pass 1: extents, deformation, and the horizontal CENTROID.
   for (let i = 0; i < N; i++) {
     const o = i * FLOATS;
     const x = f[o], y = f[o + 1], z = f[o + 2];
@@ -139,7 +144,17 @@ async function stats() {
   }
   const sdx = Math.sqrt(Math.max(0, sxx / cnt - (sx / cnt) ** 2));
   const sdz = Math.sqrt(Math.max(0, szz / cnt - (sz / cnt) ** 2));
-  return { nan, maxP, maxF, height: maxY - minY, spread: sdx + sdz };
+  const cx = sx / Math.max(1, cnt), cz = sz / Math.max(1, cnt);
+  // Pass 2: SELF-CENTERED central density — fraction within CORE_R of the blob's OWN
+  // centroid. A coherent blob has its mass PEAK at the center (high); a blob that tore
+  // into a ring/pieces has a VOID at the centroid (-> ~0). This is translation-invariant,
+  // so a press that merely shoves the blob sideways is NOT mistaken for a tear.
+  let core = 0;
+  for (let i = 0; i < N; i++) {
+    const o = i * FLOATS; const x = f[o], z = f[o + 2];
+    if (Number.isFinite(x) && Number.isFinite(z) && Math.hypot(x - cx, z - cz) < CORE_R) core++;
+  }
+  return { nan, maxP, maxF, height: maxY - minY, spread: sdx + sdz, cx, cz, coreFrac: core / Math.max(1, cnt) };
 }
 
 console.log(`seeded ${N} particles; settling ${SETTLE} steps...`);
@@ -147,10 +162,15 @@ writePointer([0, 0, 0], [0, 0, 1], [0, 0, 0], 0, 0, false);
 for (let s = 0; s < SETTLE; s++) { const enc = device.createCommandEncoder(); step(enc); device.queue.submit([enc.finish()]); }
 await device.queue.onSubmittedWorkDone();
 const before = await stats();
-console.log(`[settled] h=${before.height.toFixed(2)} spread=${before.spread.toFixed(2)} nan=${before.nan} max|F|=${before.maxF.toFixed(2)}`);
+console.log(`[settled] h=${before.height.toFixed(2)} spread=${before.spread.toFixed(2)} core=${before.coreFrac.toFixed(3)} centroid=(${before.cx.toFixed(1)},${before.cz.toFixed(1)}) nan=${before.nan} max|F|=${before.maxF.toFixed(2)}`);
+
+// Aim BOTH the tap and the press straight down at the blob's settled CENTROID (the
+// box center is the blob's z-edge, since the blob fills only z∈[3,30]). Pressing the
+// real center is what the user does, and lets the central-density tear probe be fair.
+const AIM = [before.cx, BOX[1] * 2, before.cz];
 
 // QUICK TAP: short, press=0 -> dent only, height barely changes.
-writePointer([BOX[0] / 2, BOX[1] * 2, BOX[2] / 2], [0, -1, 0], [0, -0.35, 0], 6.0, 0.0, true);
+writePointer(AIM, [0, -1, 0], [0, -0.35, 0], 6.0, 0.0, true);
 for (let s = 0; s < TAP; s++) { const enc = device.createCommandEncoder(); step(enc); applyPoke(enc); device.queue.submit([enc.finish()]); }
 writePointer([0, 0, 0], [0, 0, 1], [0, 0, 0], 0, 0, false);
 for (let s = 0; s < 20; s++) { const enc = device.createCommandEncoder(); step(enc); device.queue.submit([enc.finish()]); }
@@ -163,14 +183,14 @@ console.log(`[tap]     h=${tap.height.toFixed(2)} spread=${tap.spread.toFixed(2)
 console.log(`pressing (ramp 0->1) for ${PRESS} steps...`);
 for (let s = 0; s < PRESS; s++) {
   const press = Math.min(1, s / (PRESS * 0.4)); // ~0.5s-equiv ramp then hold
-  writePointer([BOX[0] / 2, BOX[1] * 2, BOX[2] / 2], [0, -1, 0], [0, -0.35, 0], 7.0, press, true);
+  writePointer(AIM, [0, -1, 0], [0, -0.35, 0], 7.0, press, true);
   const enc = device.createCommandEncoder(); step(enc); applyPoke(enc); device.queue.submit([enc.finish()]);
 }
 writePointer([0, 0, 0], [0, 0, 1], [0, 0, 0], 0, 0, false);
 for (let s = 0; s < 40; s++) { const enc = device.createCommandEncoder(); step(enc); device.queue.submit([enc.finish()]); } // settle, shape should HOLD (plasticity)
 await device.queue.onSubmittedWorkDone();
 const after = await stats();
-console.log(`[pressed] h=${after.height.toFixed(2)} spread=${after.spread.toFixed(2)} (Δh=${(after.height-before.height).toFixed(2)} Δspread=${(after.spread-before.spread).toFixed(2)}) nan=${after.nan} max|F|=${after.maxF.toFixed(2)}`);
+console.log(`[pressed] h=${after.height.toFixed(2)} spread=${after.spread.toFixed(2)} core=${after.coreFrac.toFixed(3)} (Δh=${(after.height-before.height).toFixed(2)} Δspread=${(after.spread-before.spread).toFixed(2)}) nan=${after.nan} max|F|=${after.maxF.toFixed(2)}`);
 
 const stable = after.nan === 0 && after.maxP < BOX[0] * 2 && after.maxF < 1e4;
 // PANCAKE signal: a sustained press makes the blob spread its FOOTPRINT outward
@@ -186,5 +206,13 @@ const flattened = (pressSpread > 1.0) || (pressHeight > 1.0); // pancaked sidewa
 // A quick tap must pancake MUCH less than a sustained press (the press ramp does
 // nothing on a tap, so its permanent spread stays small).
 const tapMild = tapSpread < pressSpread - 0.5;
-console.log(`RESULT: ${stable && flattened && tapMild ? "PASS" : "FAIL"} — stable=${stable} flattened=${flattened} (Δspread=${pressSpread.toFixed(2)} Δh=${(-pressHeight).toFixed(2)}) tap<press=${tapMild} (tapΔspread=${tapSpread.toFixed(2)})`);
-Deno.exit(stable && flattened && tapMild ? 0 : 1);
+// NO-SEPARATION: the blob's OWN center must stay a dense peak, not become a void.
+// The old narrow radial-out press evacuated the center (the blob tore into a ring /
+// pieces) -> self-centered coreFrac ~0. The coherent platen keeps the center populated.
+// A wide flatten lowers the peak (spreads out), so we require BOTH an absolute floor
+// (center is genuinely not a void) AND that it keep a fair share of its dense core.
+const coreRetained = after.coreFrac >= 0.04 && after.coreFrac >= before.coreFrac * 0.35;
+console.log(`[core] before=${before.coreFrac.toFixed(3)} -> after=${after.coreFrac.toFixed(3)} (retained ${(after.coreFrac / Math.max(1e-6, before.coreFrac) * 100).toFixed(0)}%) noSeparation=${coreRetained}`);
+const pass = stable && flattened && tapMild && coreRetained;
+console.log(`RESULT: ${pass ? "PASS" : "FAIL"} — stable=${stable} flattened=${flattened} (Δspread=${pressSpread.toFixed(2)} Δh=${(-pressHeight).toFixed(2)}) tap<press=${tapMild} (tapΔspread=${tapSpread.toFixed(2)}) noSeparation=${coreRetained}`);
+Deno.exit(pass ? 0 : 1);

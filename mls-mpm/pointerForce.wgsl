@@ -7,14 +7,25 @@
 //
 // Two modes layered in one pass, blended by `press` in [0,1] (the CPU ramps it up
 // the longer a finger is held — see input.ts):
-//   QUICK TAP  (press~0): just the inward push along the ray -> a centered DENT.
-//   LONG PRESS (press->1): ALSO spread particles RADIALLY OUTWARD (perpendicular to
-//                          the ray, away from the closest point on the ray axis) and
-//                          push them DOWN (world -Y) -> the blob PANCAKES / flattens.
+//   QUICK TAP  (press~0): just the inward push along the ray -> a centered DENT,
+//                         falloff over the small contact radius `radius`.
+//   LONG PRESS (press->1): a BROAD DOWNWARD PLATEN. Instead of a narrow disc around
+//                         the ray, the press footprint is a wide VERTICAL COLUMN on
+//                         the floor under the finger (radius = radius*PRESS_RADIUS_SCALE,
+//                         sized to cover at least ~half the blob). Across that column
+//                         particles are pushed DOWN (world -Y) with a near-UNIFORM
+//                         "plateau" profile — full strength over the inner disc, tapered
+//                         only at the rim. A uniform, low-gradient push pancakes the whole
+//                         region together. (The OLD press used a narrow disc with a strong
+//                         RADIAL-OUTWARD shove + a center-peaked down push, which evacuated
+//                         the center and TORE the blob into pieces — exactly what this
+//                         replaces.) A small rim-only outward nudge relieves the lip.
 // With plasticity ON (g2p return-mapping) the flattened shape PERSISTS after release.
 //
 // Struct MUST be byte-identical to g2p.wgsl's Particle (128 B) so the storage
 // binding aliases the same buffer correctly. We only read .position and write .v.
+// The 48 B PointerUniform is UNCHANGED — the broad platen is derived in-shader from
+// the existing ray (ray ∩ floor plane), so every CPU writer stays byte-identical.
 
 struct Particle {
     position: vec3f,
@@ -40,6 +51,18 @@ struct PointerUniform {
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<uniform> pointer: PointerUniform;
 
+// --- Press-flatten tuning (broad platen). All gated by `press` so a quick tap is
+// untouched. Tunable; see header for what each shapes. ---
+const PRESS_RADIUS_SCALE: f32 = 2.5; // contact radius -> platen radius. With the live
+                                     // poke radius (~6) this is ~15 world units, which
+                                     // covers >= ~half the ~33x27 blob footprint.
+const PRESS_PLATEAU: f32 = 0.6;      // inner fraction of the platen at FULL down strength
+                                     // (uniform slab); the outer 1-PRESS_PLATEAU tapers.
+const PRESS_DOWN: f32 = 0.6;         // -Y velocity gain at full press (matches the old
+                                     // center peak, but now spread across the whole disc).
+const PRESS_SPREAD: f32 = 0.25;      // gentle rim-ONLY outward relief (was 0.9 everywhere,
+                                     // which is what separated the slime — now tiny + edge).
+
 @compute @workgroup_size(64)
 fn pointerForce(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= arrayLength(&particles)) { return; }
@@ -55,37 +78,53 @@ fn pointerForce(@builtin(global_invocation_id) id: vec3<u32>) {
     let d: f32 = length(radial_vec);                  // perpendicular distance
 
     let r: f32 = max(pointer.radius, 1e-4);
-    if (d >= r) { return; }
-
-    // Smooth falloff: smoothstep-style (1 at center -> 0 at edge), squared for a
-    // softer shoulder so the dent has a rounded profile instead of a hard disc.
-    let x: f32 = 1.0 - d / r;        // 1 at axis, 0 at radius
-    let falloff: f32 = x * x * (3.0 - 2.0 * x);  // C1 smoothstep on x in [0,1]
-
-    // (1) DENT: pointer.force is already the per-frame world delta-v along the ray
-    // (CPU clamps |force| to a safe bound vs the 1e6 fixed-point atomic headroom).
-    var dv: vec3f = pointer.force * falloff;
-
-    // (2) PRESS-FLATTEN: only kicks in as the finger is held (press -> 1). Add a
-    // RADIAL-OUTWARD component (perpendicular to the ray, away from the axis) so
-    // mass spreads sideways, and a DOWNWARD component so the blob pancakes rather
-    // than just denting. Both are gated by `press` and the same radial falloff.
     let press: f32 = clamp(pointer.press, 0.0, 1.0);
+
+    // --- PRESS footprint membership (broad horizontal platen). ---
+    // Platen center = where the pointer ray meets the FLOOR plane (y=0), so the press
+    // is a wide vertical COLUMN under the finger (a true horizontal-plane press),
+    // independent of camera tilt. Guard near-horizontal rays by falling back to the
+    // ray's closest-approach point (keeps it centered on the contact disc we hit).
+    var center_xz: vec2f = closest.xz;
     if (press > 0.001) {
-        // Unit radial direction (guard the axis singularity where d ~ 0).
-        var radial_dir: vec3f = vec3f(0.0, 0.0, 0.0);
-        if (d > 1e-4) { radial_dir = radial_vec / d; }
+        let dyr: f32 = pointer.ray_dir.y;
+        if (dyr < -0.15) {
+            let tf: f32 = -pointer.ray_origin.y / dyr;
+            center_xz = pointer.ray_origin.xz + tf * pointer.ray_dir.xz;
+        }
+    }
+    let R_press: f32 = r * PRESS_RADIUS_SCALE;
+    let dh: f32 = length(p.xz - center_xz);           // horizontal dist from platen axis
 
-        // The outward push is STRONGER toward the rim of the contact disc (where the
-        // material wants to flow out) and the down push is stronger at the center
-        // (under the finger). Tuned magnitudes stay well inside the |v|<=4 cap.
-        let SPREAD: f32 = 0.9;   // radial-outward gain at full press
-        let DOWN: f32   = 0.6;   // -Y gain at full press
+    let in_dent: bool = d < r;
+    let in_press: bool = (press > 0.001) && (dh < R_press);
+    if (!in_dent && !in_press) { return; }            // untouched -> nothing to do
 
-        // rim weight: 0 at axis, peaks near the edge -> pushes the spreading lip out.
-        let rim: f32 = falloff * (1.0 - x);            // ~bump in the mid/outer ring
-        dv += radial_dir * (SPREAD * press * (rim + 0.25 * falloff));
-        dv += vec3f(0.0, -1.0, 0.0) * (DOWN * press * falloff);
+    var dv: vec3f = vec3f(0.0, 0.0, 0.0);
+
+    // (1) DENT: pointer.force is the per-frame world delta-v along the ray (CPU clamps
+    // |force| safe vs the 1e6 fixed-point atomic headroom). Smooth falloff (1 at the
+    // axis -> 0 at the edge), squared for a rounded shoulder.
+    if (in_dent) {
+        let x: f32 = 1.0 - d / r;
+        let falloff: f32 = x * x * (3.0 - 2.0 * x);   // C1 smoothstep on x in [0,1]
+        dv += pointer.force * falloff;
+    }
+
+    // (2) PRESS-FLATTEN: broad downward platen. Full-strength -Y over the inner
+    // plateau, smooth taper to the rim. Near-uniform => low velocity gradient =>
+    // the whole footprint descends as ONE coherent slab (no center evacuation /
+    // tearing). A tiny rim-only outward nudge lets the spreading lip flow out clean.
+    if (in_press) {
+        let down_w: f32 = 1.0 - smoothstep(R_press * PRESS_PLATEAU, R_press, dh);
+        dv += vec3f(0.0, -1.0, 0.0) * (PRESS_DOWN * press * down_w);
+
+        if (dh > 1e-4) {
+            let rim_w: f32 = smoothstep(R_press * PRESS_PLATEAU, R_press, dh);
+            let rdir: vec2f = (p.xz - center_xz) / dh; // unit outward in the floor plane
+            let out: vec2f = rdir * (PRESS_SPREAD * press * rim_w);
+            dv += vec3f(out.x, 0.0, out.y);
+        }
     }
 
     particles[id.x].v += dv;

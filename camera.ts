@@ -23,6 +23,16 @@ export class Camera {
   fov!: number
   zoomRate!: number
 
+  // --- M4 ViewCube snap tween (eased orbit toward a target yaw/pitch) ---
+  // performance.now() is allowed in app code (only Workflow scripts forbid it).
+  private tweenActive = false
+  private tweenStartMs = 0
+  private tweenDurMs = 300
+  private tweenFromYaw = 0
+  private tweenFromPitch = 0
+  private tweenToYaw = 0
+  private tweenToPitch = 0
+
   // The constructor signature is kept (main.ts does `new Camera(canvas)`), but it
   // NO LONGER binds any listeners — the InputController owns all canvas pointer
   // handling now, and calls the imperative methods below. The param is unused.
@@ -58,8 +68,51 @@ export class Camera {
   // With raw (cur - prev) input that is `currentXtheta -= sensitivity * (cur-prev)`,
   // which is what we do here — identical feel.
   orbit(dxPixels: number, dyPixels: number) {
+    // Any genuine user orbit cancels an in-flight ViewCube snap tween, so a live
+    // drag always wins over an animation (no fight between the two).
+    this.tweenActive = false
     this.currentXtheta -= this.sensitivity * dxPixels
     this.currentYtheta -= this.sensitivity * dyPixels
+    if (this.currentYtheta > this.maxYTheta) this.currentYtheta = this.maxYTheta
+    if (this.currentYtheta < this.minYTheta) this.currentYtheta = this.minYTheta
+    this.recalculateView()
+  }
+
+  // ----------------------------------------------------------------------------
+  // M4 ViewCube support: read current orbit angles + an eased snap tween.
+  // ----------------------------------------------------------------------------
+
+  // Current orbit angles (yaw = currentXtheta, pitch = currentYtheta).
+  getAngles(): { yaw: number; pitch: number } {
+    return { yaw: this.currentXtheta, pitch: this.currentYtheta }
+  }
+
+  // Start an eased tween of yaw/pitch toward (yaw, clamp(pitch)) over ~300ms.
+  // Records start values + start time; update() advances it each frame.
+  animateTo(yaw: number, pitch: number) {
+    let p = pitch
+    if (p > this.maxYTheta) p = this.maxYTheta
+    if (p < this.minYTheta) p = this.minYTheta
+    this.tweenFromYaw = this.currentXtheta
+    this.tweenFromPitch = this.currentYtheta
+    this.tweenToYaw = yaw
+    this.tweenToPitch = p
+    this.tweenStartMs = performance.now()
+    this.tweenActive = true
+  }
+
+  // Called once per frame from main.ts. If a tween is active, advance it with an
+  // ease-in-out curve, set yaw/pitch (clamped) and recalc the view. orbit()
+  // clears tweenActive, so a mid-tween user drag cancels the animation.
+  update() {
+    if (!this.tweenActive) return
+    const elapsed = performance.now() - this.tweenStartMs
+    let t = this.tweenDurMs > 0 ? elapsed / this.tweenDurMs : 1
+    if (t >= 1) { t = 1; this.tweenActive = false }
+    // ease in-out (smoothstep-style cubic)
+    const e = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+    this.currentXtheta = this.tweenFromYaw + (this.tweenToYaw - this.tweenFromYaw) * e
+    this.currentYtheta = this.tweenFromPitch + (this.tweenToPitch - this.tweenFromPitch) * e
     if (this.currentYtheta > this.maxYTheta) this.currentYtheta = this.maxYTheta
     if (this.currentYtheta < this.minYTheta) this.currentYtheta = this.minYTheta
     this.recalculateView()

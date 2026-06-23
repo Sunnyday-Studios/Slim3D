@@ -14,6 +14,7 @@ import { FluidRenderer } from './render/fluidRender'
 import { Camera } from './camera'
 import { InputController } from './input'
 import { Controls } from './controls'
+import { ViewCube } from './viewcube'
 
 const statusEl = document.getElementById('status') as HTMLDivElement
 function setStatus(msg: string, isError = false) {
@@ -122,6 +123,11 @@ async function main() {
   // applies the default TYPE preset on construction.
   const controls = new Controls(simulator, renderer)
 
+  // M4: CSS-3D ViewCube ("rosette") orientation gizmo. Pure DOM overlay; owns its
+  // own pointer events on its own element (never pokes the canvas). Mirrors the
+  // camera each frame; tap-to-snap + drag-to-orbit + Home button.
+  const viewcube = new ViewCube(camera)
+
   function resetBlob() {
     simulator.reset(NUM_PARTICLES, INIT_BOX)
     camera.reset(canvas, INIT_DISTANCE, [INIT_BOX[0] / 2, INIT_BOX[1] / 4, INIT_BOX[2] / 2], FOV, ZOOM_RATE)
@@ -147,6 +153,14 @@ async function main() {
     // M2: compute the pointer poke and write the pointer uniform BEFORE the sim
     // runs, so this frame's force is live for the next p2g scatter.
     input.update()
+
+    // M4: advance any active ViewCube snap tween (camera.update writes the view),
+    // THEN mirror the cube from the freshly-updated angles. Order matters: tween
+    // first so the cube reflects this frame's camera. A live user orbit (from the
+    // canvas or the cube drag) cancels the tween inside camera.orbit(), so the two
+    // never fight.
+    camera.update()
+    viewcube.update()
 
     device.queue.writeBuffer(renderUniformBuffer, 0, renderUniformsValues)
 

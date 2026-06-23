@@ -1,0 +1,49 @@
+name: Deploy to itch.io
+
+# Auto-update: every push to main builds the game and pushes it to itch.io via
+# butler. itch serves the new HTML5 build immediately (and the itch desktop app
+# delta-patches installed copies). Manual run also available (workflow_dispatch).
+#
+# Required repo config (Settings -> Secrets and variables -> Actions):
+#   - secret  BUTLER_API_KEY  : from https://itch.io/user/settings/api-keys
+#   - variable ITCH_USER      : your itch.io username (the part before the slash)
+# And the game page must already exist on itch.io as ITCH_USER/slim3d (Kind: HTML).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      ITCH_USER: ${{ vars.ITCH_USER }}
+      ITCH_GAME: slim3d
+      CHANNEL: html5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Install butler
+        run: |
+          curl -sL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip
+          chmod +x butler
+          ./butler -V
+
+      - name: Push to itch.io
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: |
+          if [ -z "$ITCH_USER" ] || [ -z "$BUTLER_API_KEY" ]; then
+            echo "::error::Set repo variable ITCH_USER and secret BUTLER_API_KEY first."
+            exit 1
+          fi
+          ./butler push dist "$ITCH_USER/$ITCH_GAME:$CHANNEL" --userversion "$(git rev-parse --short HEAD)"

@@ -17,7 +17,7 @@
 import { MLSMPMSimulator } from './mls-mpm/mls-mpm'
 import { FluidRenderer } from './render/fluidRender'
 
-export type Physics = { mu: number; lambda: number; viscosity: number; gravity: number }
+export type Physics = { mu: number; lambda: number; viscosity: number; gravity: number; plasticity: number }
 export type Style = { color: [number, number, number]; gloss: number; opacity: number; foam: number }
 export type Preset = { name: string; physics: Physics; style: Style }
 
@@ -38,36 +38,41 @@ function rgb01ToHex(c: [number, number, number]): string {
 
 // --- The 6 researched TYPE presets (Sloomoo glossary + Peachybbies/Dope Slimes).
 //     All params are inside the stability-safe regime (mu<=6, lambda<=12,
-//     viscosity 0.1..1.5, gravity -0.6..0). ---
+//     viscosity 0.1..1.5, gravity -0.6..0, plasticity 0..1). ---
+//
+// plasticity guide: 0 = pure-elastic snap-back (original M1 feel), 1 = play-doh that
+// holds any reshape. Snappy/glossy slimes (Clear/Glossy/Jelly) keep it LOW so they
+// still bounce back; Butter & Cloud are deformable/spreadable so they hold a press;
+// Floam sits mid (beads give it some structure but it still smooshes).
 export const PRESETS: Preset[] = [
   {
     name: 'Clear',
-    physics: { mu: 2.0, lambda: 5.0, viscosity: 0.9, gravity: -0.35 },
+    physics: { mu: 2.0, lambda: 5.0, viscosity: 0.9, gravity: -0.35, plasticity: 0.15 },
     style: { color: hexToRgb01('#1A8CD9'), gloss: 1.0, opacity: 0.25, foam: 0.0 },
   },
   {
     name: 'Glossy',
-    physics: { mu: 4.0, lambda: 8.0, viscosity: 0.6, gravity: -0.30 },
+    physics: { mu: 4.0, lambda: 8.0, viscosity: 0.6, gravity: -0.30, plasticity: 0.10 },
     style: { color: hexToRgb01('#F24C8C'), gloss: 0.95, opacity: 0.85, foam: 0.0 },
   },
   {
     name: 'Butter',
-    physics: { mu: 3.0, lambda: 4.0, viscosity: 1.2, gravity: -0.25 },
+    physics: { mu: 3.0, lambda: 4.0, viscosity: 1.2, gravity: -0.25, plasticity: 0.75 },
     style: { color: hexToRgb01('#F7DB8C'), gloss: 0.15, opacity: 0.95, foam: 0.0 },
   },
   {
     name: 'Cloud',
-    physics: { mu: 2.5, lambda: 5.0, viscosity: 0.7, gravity: -0.45 },
+    physics: { mu: 2.5, lambda: 5.0, viscosity: 0.7, gravity: -0.45, plasticity: 0.65 },
     style: { color: hexToRgb01('#D9CCEB'), gloss: 0.35, opacity: 0.90, foam: 0.25 },
   },
   {
     name: 'Floam',
-    physics: { mu: 3.5, lambda: 7.0, viscosity: 0.8, gravity: -0.30 },
+    physics: { mu: 3.5, lambda: 7.0, viscosity: 0.8, gravity: -0.30, plasticity: 0.40 },
     style: { color: hexToRgb01('#59D9A6'), gloss: 0.50, opacity: 0.60, foam: 0.90 },
   },
   {
     name: 'Jelly',
-    physics: { mu: 3.5, lambda: 9.0, viscosity: 0.5, gravity: -0.30 },
+    physics: { mu: 3.5, lambda: 9.0, viscosity: 0.5, gravity: -0.30, plasticity: 0.20 },
     style: { color: hexToRgb01('#F27333'), gloss: 0.85, opacity: 0.55, foam: 0.0 },
   },
 ]
@@ -107,6 +112,7 @@ export class Controls {
   private lambdaEl!: HTMLInputElement
   private flowEl!: HTMLInputElement
   private gravityEl!: HTMLInputElement
+  private plasticityEl!: HTMLInputElement
   private glossEl!: HTMLInputElement
   private colorEl!: HTMLInputElement
   private foamChkEl!: HTMLInputElement
@@ -164,12 +170,14 @@ export class Controls {
     this.lambdaEl = document.getElementById('slLambda') as HTMLInputElement
     this.flowEl = document.getElementById('slFlow') as HTMLInputElement
     this.gravityEl = document.getElementById('slGravity') as HTMLInputElement
+    this.plasticityEl = document.getElementById('slPlasticity') as HTMLInputElement
     this.glossEl = document.getElementById('slGloss') as HTMLInputElement
 
     this.muEl.addEventListener('input', () => { this.phys.mu = parseFloat(this.muEl.value); this.pushMaterial() })
     this.lambdaEl.addEventListener('input', () => { this.phys.lambda = parseFloat(this.lambdaEl.value); this.pushMaterial() })
     this.flowEl.addEventListener('input', () => { this.phys.viscosity = parseFloat(this.flowEl.value); this.pushMaterial() })
     this.gravityEl.addEventListener('input', () => { this.phys.gravity = parseFloat(this.gravityEl.value); this.pushMaterial() })
+    this.plasticityEl.addEventListener('input', () => { this.phys.plasticity = parseFloat(this.plasticityEl.value); this.pushMaterial() })
     this.glossEl.addEventListener('input', () => { this.style.gloss = parseFloat(this.glossEl.value); this.pushStyle() })
   }
 
@@ -221,6 +229,7 @@ export class Controls {
     this.lambdaEl.value = String(this.phys.lambda)
     this.flowEl.value = String(this.phys.viscosity)
     this.gravityEl.value = String(this.phys.gravity)
+    this.plasticityEl.value = String(this.phys.plasticity)
     this.glossEl.value = String(this.style.gloss)
     this.colorEl.value = rgb01ToHex(this.style.color)
     this.foamChkEl.checked = this.style.foam > 0
@@ -232,7 +241,7 @@ export class Controls {
   }
 
   private pushMaterial() {
-    this.sim.setMaterial(this.phys.mu, this.phys.lambda, this.phys.viscosity, this.phys.gravity)
+    this.sim.setMaterial(this.phys.mu, this.phys.lambda, this.phys.viscosity, this.phys.gravity, this.phys.plasticity)
   }
   private pushStyle() {
     this.renderer.setStyle(this.style.color, this.style.gloss, this.style.opacity, this.style.foam)

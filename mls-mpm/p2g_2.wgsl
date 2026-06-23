@@ -11,13 +11,21 @@ struct Cell {
     mass: i32,
 }
 
-// Runtime material params (live sliders / type presets). std140 16B.
-// Layout MUST match mls-mpm.ts materialView Float32Array([mu, lambda, viscosity, gravity]).
+// Runtime material params (live sliders / type presets). std140 32B.
+// Layout MUST match mls-mpm.ts materialView Float32Array
+//   ([mu, lambda, viscosity, gravity, plasticity, pad, pad, pad]).
+// Shared buffer: p2g_2 + updateGrid bind it at binding 3, g2p at binding 4.
+// p2g_2 does NOT read .plasticity (the return-mapping happens in g2p); the field
+// is present only so all three shaders agree on the 32B byte layout.
 struct Material {
-    mu: f32,         // @0  shear modulus
-    lambda: f32,     // @4  first Lame parameter
-    viscosity: f32,  // @8  viscous damping
-    gravity: f32,    // @12 (unused here; shared layout with updateGrid)
+    mu: f32,          // @0  shear modulus
+    lambda: f32,      // @4  first Lame parameter
+    viscosity: f32,   // @8  viscous damping
+    gravity: f32,     // @12 (unused here; shared layout with updateGrid)
+    plasticity: f32,  // @16 (unused here; read in g2p for SVD yield)
+    _pad0: f32,       // @20
+    _pad1: f32,       // @24
+    _pad2: f32,       // @28  -> 32B, std140-aligned
 }
 
 override fixed_point_multiplier: f32;

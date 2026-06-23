@@ -41,12 +41,17 @@ export class MLSMPMSimulator {
     particleBuffer: GPUBuffer
     pointerUniformBuffer: GPUBuffer
 
-    // Runtime material uniform (16B): { mu@0, lambda@4, viscosity@8, gravity@12 }.
-    // Bound at binding 3 of BOTH p2g_2 and updateGrid so sliders / type presets
-    // take effect live without recreating any pipeline. setMaterial() writes it.
+    // Runtime material uniform (32B, std140):
+    //   { mu@0, lambda@4, viscosity@8, gravity@12, plasticity@16, _pad@20/24/28 }.
+    // Bound at binding 3 of BOTH p2g_2 and updateGrid AND (new) binding 4 of g2p
+    // (g2p reads .plasticity for the SVD return-mapping yield), so sliders / type
+    // presets take effect live without recreating any pipeline. setMaterial() writes it.
+    // The struct grew 16->32B because std140 rounds a struct with a vec-free tail up
+    // to 16B alignment; 5 active f32 + 3 pad = 32B, the next 16B multiple.
     materialUniformBuffer: GPUBuffer
-    private materialValues = new ArrayBuffer(16)
-    private materialView = new Float32Array(this.materialValues) // [mu, lambda, viscosity, gravity]
+    private materialValues = new ArrayBuffer(32)
+    // [mu, lambda, viscosity, gravity, plasticity, pad, pad, pad]
+    private materialView = new Float32Array(this.materialValues)
 
     // Validated default material (Glossy baseline params: viscosity 0.6,
     // gravity -0.3 are the headless-validated values; mu/lambda 3/6 = M1 defaults).
@@ -54,6 +59,10 @@ export class MLSMPMSimulator {
     static readonly DEFAULT_LAMBDA = 6.0
     static readonly DEFAULT_VISCOSITY = 0.6
     static readonly DEFAULT_GRAVITY = -0.3
+    // plasticity 0 = fully elastic (snaps back, original M1 behavior — the g2p
+    // SVD clamp window opens so wide nothing is ever clamped); 1 = very plastic
+    // (tight yield -> reshapes & holds). Default 0 preserves the validated baseline.
+    static readonly DEFAULT_PLASTICITY = 0.0
 
     // CPU-side scratch for the 48-byte pointer uniform (see writePointerUniform).
     private pointerUniformValues = new ArrayBuffer(48)
@@ -61,7 +70,7 @@ export class MLSMPMSimulator {
         ray_origin: new Float32Array(this.pointerUniformValues, 0, 3),
         radius:     new Float32Array(this.pointerUniformValues, 12, 1),
         ray_dir:    new Float32Array(this.pointerUniformValues, 16, 3),
-        strength:   new Float32Array(this.pointerUniformValues, 28, 1),
+        press:      new Float32Array(this.pointerUniformValues, 28, 1), // 0..1 sustained-press ramp
         force:      new Float32Array(this.pointerUniformValues, 32, 3),
         active:     new Float32Array(this.pointerUniformValues, 44, 1),
     }
@@ -201,10 +210,10 @@ export class MLSMPMSimulator {
         device.queue.writeBuffer(this.initBoxSizeBuffer, 0, initBoxSizeValues);
         device.queue.writeBuffer(this.realBoxSizeBuffer, 0, realBoxSizeValues);
 
-        // 16-byte runtime Material uniform. Initialized to validated defaults.
+        // 32-byte runtime Material uniform. Initialized to validated defaults.
         this.materialUniformBuffer = device.createBuffer({
             label: 'material uniform buffer',
-            size: this.materialValues.byteLength, // 16
+            size: this.materialValues.byteLength, // 32
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         })
         this.setMaterial(
@@ -212,9 +221,10 @@ export class MLSMPMSimulator {
             MLSMPMSimulator.DEFAULT_LAMBDA,
             MLSMPMSimulator.DEFAULT_VISCOSITY,
             MLSMPMSimulator.DEFAULT_GRAVITY,
+            MLSMPMSimulator.DEFAULT_PLASTICITY,
         )
 
-        // 48-byte pointer uniform (ray_origin, radius, ray_dir, strength, force, active).
+        // 48-byte pointer uniform (ray_origin, radius, ray_dir, press, force, active).
         this.pointerUniformBuffer = device.createBuffer({
             label: 'pointer force uniform buffer',
             size: this.pointerUniformValues.byteLength, // 48
@@ -264,6 +274,10 @@ export class MLSMPMSimulator {
                 { binding: 1, resource: { buffer: cellBuffer }},
                 { binding: 2, resource: { buffer: this.realBoxSizeBuffer }},
                 { binding: 3, resource: { buffer: this.initBoxSizeBuffer }},
+                // NEW: g2p reads .plasticity here for the SVD return-mapping. Bound at
+                // binding 4 (the first free index after g2p's existing 0..3) — SAME
+                // materialUniformBuffer that p2g_2 / updateGrid bind at their binding 3.
+                { binding: 4, resource: { buffer: this.materialUniformBuffer }},
             ],
         })
         this.copyPositionBindGroup = device.createBindGroup({
@@ -342,19 +356,28 @@ export class MLSMPMSimulator {
             MLSMPMSimulator.DEFAULT_LAMBDA,
             MLSMPMSimulator.DEFAULT_VISCOSITY,
             MLSMPMSimulator.DEFAULT_GRAVITY,
+            MLSMPMSimulator.DEFAULT_PLASTICITY,
         )
         console.log(this.numParticles)
     }
 
-    // Write the 16B runtime Material uniform. Values are clamped to the validated
+    // Write the 32B runtime Material uniform. Values are clamped to the validated
     // stable regime so a slider/preset can never feed F into a blow-up:
-    //   mu in [1,6], lambda in [2,12], viscosity in [0.1,1.5], gravity in [-0.6,0].
-    setMaterial(mu: number, lambda: number, viscosity: number, gravity: number) {
+    //   mu in [1,6], lambda in [2,12], viscosity in [0.1,1.5], gravity in [-0.6,0],
+    //   plasticity in [0,1] (0 = fully elastic/snap-back; 1 = very plastic/holds shape).
+    // `plasticity` is OPTIONAL so any older caller (and headless harness writing only
+    // 4 floats) keeps working at full-elastic; it defaults to the elastic baseline.
+    setMaterial(
+        mu: number, lambda: number, viscosity: number, gravity: number,
+        plasticity: number = MLSMPMSimulator.DEFAULT_PLASTICITY,
+    ) {
         const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
         this.materialView[0] = clamp(mu, 1.0, 6.0)
         this.materialView[1] = clamp(lambda, 2.0, 12.0)
         this.materialView[2] = clamp(viscosity, 0.1, 1.5)
         this.materialView[3] = clamp(gravity, -0.6, 0.0)
+        this.materialView[4] = clamp(plasticity, 0.0, 1.0)
+        // [5],[6],[7] are std140 tail padding — leave 0.
         this.device.queue.writeBuffer(this.materialUniformBuffer, 0, this.materialValues)
     }
 
@@ -388,9 +411,13 @@ export class MLSMPMSimulator {
     // Write the pointer uniform. `force` is the world-space per-frame delta-v to add
     // to nearby particles; we CLAMP its magnitude to MAX_INJECT_V so we never feed
     // the 1e6 fixed-point atomics past their ~+/-2147 ceiling (p2g sums per cell).
+    // `press` in [0,1] is the sustained-press ramp (0 = quick tap -> just a dent;
+    // 1 = long hold -> pointerForce.wgsl adds radial-outward + downward spread so the
+    // blob flattens). The shader-side spread velocities are also bounded by its
+    // internal |v|<=4 cap, so press never breaks elastic stability.
     setPointerForce(
         rayOrigin: number[], rayDir: number[], force: number[],
-        radius: number, active: boolean
+        radius: number, active: boolean, press: number = 0
     ) {
         // normalize ray_dir defensively (the WGSL distance-to-ray math assumes |D|=1)
         let dx = rayDir[0], dy = rayDir[1], dz = rayDir[2]
@@ -406,7 +433,7 @@ export class MLSMPMSimulator {
         this.pointerViews.ray_origin.set([rayOrigin[0], rayOrigin[1], rayOrigin[2]])
         this.pointerViews.radius[0] = radius
         this.pointerViews.ray_dir.set([dx, dy, dz])
-        this.pointerViews.strength[0] = 1.0 // reserved; force is pre-scaled CPU-side
+        this.pointerViews.press[0] = Math.min(1, Math.max(0, press)) // 0..1 ramp
         this.pointerViews.force.set([fx, fy, fz])
         this.pointerViews.active[0] = active ? 1.0 : 0.0
 

@@ -5,13 +5,18 @@ struct Cell {
     mass: i32, 
 }
 
-// Runtime material params (shared 16B layout with p2g_2's Material). Only
-// .gravity is read here; the other three are present so the same buffer binds.
+// Runtime material params (shared 32B layout with p2g_2's + g2p's Material). Only
+// .gravity is read here; the others are present so the same buffer binds with an
+// identical std140 byte layout across all three shaders.
 struct Material {
-    mu: f32,         // @0
-    lambda: f32,     // @4
-    viscosity: f32,  // @8
-    gravity: f32,    // @12  per-step gravity acceleration (negative = down)
+    mu: f32,          // @0
+    lambda: f32,      // @4
+    viscosity: f32,   // @8
+    gravity: f32,     // @12  per-step gravity acceleration (negative = down)
+    plasticity: f32,  // @16  (unused here; read in g2p for SVD yield)
+    _pad0: f32,       // @20
+    _pad1: f32,       // @24
+    _pad2: f32,       // @28  -> 32B, std140-aligned
 }
 
 override fixed_point_multiplier: f32; 

@@ -33,6 +33,10 @@ type Mode = 'none' | 'poke' | 'orbit'
 
 // Tuning
 const PINCH_ZOOM_GAIN = 0.03 // pinch-distance px -> zoom units
+// Press-ramp: ms of sustained hold to reach full press (1.0). A tap shorter than a
+// fraction of this barely spreads (stays a dent); ~0.7s+ of hold flattens. The ramp
+// is eased (smoothstep) so the flatten eases in instead of snapping on.
+const PRESS_RAMP_MS = 700
 
 export class InputController {
   private canvas: HTMLCanvasElement
@@ -49,6 +53,13 @@ export class InputController {
   private pokeNdcPrevX = 0
   private pokeNdcPrevY = 0
   private pokeActive = false
+
+  // press-duration ramp: timestamp (performance.now) the CURRENT poke became active.
+  // The longer a finger is held, the more `press` (0..1) ramps up; press drives the
+  // pointerForce spread/flatten. A quick tap releases before the ramp builds, so it
+  // stays a small DENT; a sustained hold ramps to 1 and FLATTENS the blob. -1 = no
+  // active poke yet (ramp not started).
+  private pokeStartMs = -1
 
   // orbit state (orbitIds = 1 entry for mouse, 2 for two-finger touch)
   private orbitIds: number[] = []
@@ -250,18 +261,31 @@ export class InputController {
   // ---- per-frame: compute & push the poke force (call BEFORE sim.execute) ----
   update() {
     if (this.mode === 'poke' && this.pokeActive) {
+      // Stamp the press-ramp start on the first active frame of this poke; compute
+      // an eased 0..1 ramp from how long the finger has been held. A quick tap
+      // releases before the ramp builds -> press stays low -> just a dent. A
+      // sustained hold ramps to 1 -> pointerForce adds radial-out + down -> flatten.
+      const now = performance.now()
+      if (this.pokeStartMs < 0) this.pokeStartMs = now
+      const held = now - this.pokeStartMs
+      const tRaw = PRESS_RAMP_MS > 0 ? Math.min(1, held / PRESS_RAMP_MS) : 1
+      const press = tRaw * tRaw * (3 - 2 * tRaw) // smoothstep ease-in
+
       const poke = this.camera.poke(this.pokeNdcX, this.pokeNdcY, this.pokeNdcPrevX, this.pokeNdcPrevY)
-      this.sim.setPointerForce(poke.origin, poke.dir, poke.force, poke.radius, true)
+      this.sim.setPointerForce(poke.origin, poke.dir, poke.force, poke.radius, true, press)
       // advance prev NDC for next frame's drag delta
       this.pokeNdcPrevX = this.pokeNdcX
       this.pokeNdcPrevY = this.pokeNdcY
       this.prevActive = true
     } else {
+      // poke ended (or never started) -> reset the press ramp so the next tap
+      // starts fresh at press=0.
+      this.pokeStartMs = -1
       // Only write the "clear" uniform ONCE on the active->inactive edge; while
       // already idle, skip the per-frame GPU write entirely. The pass still runs
       // each frame but the shader early-returns on active<0.5 (cheap no-op).
       if (this.prevActive) {
-        this.sim.setPointerForce([0, 0, 0], [0, 0, 1], [0, 0, 0], 0, false)
+        this.sim.setPointerForce([0, 0, 0], [0, 0, 1], [0, 0, 0], 0, false, 0)
         this.prevActive = false
       }
     }

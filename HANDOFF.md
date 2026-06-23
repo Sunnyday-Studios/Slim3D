@@ -1,8 +1,8 @@
 # Slim3D — Session Hand-off
 
-**Read this first.** Clean breaking point as of commit `e952c35` (Audio). Everything below
-"Done" is committed, headless-validated, and deployed live. Next session starts at
-**Mix-ins** (§Remaining).
+**Read this first.** Clean breaking point as of commit `f480806` (Press-flatten broad platen).
+Everything below "Done" is committed, headless-validated, and deployed live. Next session starts
+at **Mix-ins** (§Remaining).
 
 ---
 
@@ -29,12 +29,15 @@ freeware. Kernel-selection rationale: [kernel-eval.md](kernel-eval.md).
 | ViewCube | `86ab434` | CSS-3D gizmo: tap-face / drag / Home, mobile-first |
 | Plasticity + extended-press | `bc0f7cd` | **3×3 SVD return mapping** (squish-flat that STAYS) + press/spread force |
 | Audio | `e952c35` | Procedural per-type pop/crackle/squelch (Web Audio, zero assets), mute, mobile-unlock |
+| Press-flatten v2 | `f480806` | **Broad downward platen** (≥½ blob footprint, near-uniform plateau, rim-only relief): a sustained press flattens the blob as one coherent slab instead of tearing it into pieces. Quick-tap dent unchanged; 48 B uniform + 128 B struct untouched (platen derived in-shader from ray∩floor). New harness probe = self-centered central density (no-separation gate) |
 
 ## 3. Architecture / file map
 
 - **Sim (WebGPU compute), `mls-mpm/`:** 6 validated shaders `clearGrid`, `p2g_1`,
   `p2g_2` (elastic stress), `updateGrid` (gravity), `g2p` (F update + **SVD plasticity
-  return mapping**), `copyPosition`; plus `pointerForce.wgsl` (poke/press injection).
+  return mapping**), `copyPosition`; plus `pointerForce.wgsl` (poke DENT + **broad-platen
+  PRESS-FLATTEN**: wide vertical column = ray∩floor plane, near-uniform plateau down push,
+  radius = poke r × `PRESS_RADIUS_SCALE` 2.5 ≈ ≥½ blob; tunable consts at top of the file).
   `mls-mpm.ts` orchestrates pipelines/bind-groups + owns the **Material uniform**.
   - **Particle struct = 128 B** `{position@0, v@16, C@32 (mat3x3), F@80 (mat3x3)}`. **Do
     not change** without re-validating everything.
@@ -110,6 +113,8 @@ re-run it to resume.**
    fluid + UI toggles. **128 B struct + 6 sim shaders stay untouched.** Workflow ready:
    `docs/workflows/mixins.workflow.js`. Highest blind-risk (new render pass) → expect a
    visual-iteration round with the user.
+   *(NB: "broaden the press so it doesn't separate the slime" — sometimes called M4 in chat —
+   is DONE; see Done table → Press-flatten v2 `f480806`. The "M4" below is the WebGL2 fallback.)*
 2. **M4 — WebGL2 fallback** — LARGE. Per the kernel eval, WebGPU compute/atomics can't port
    to WebGL2 → this is a *reduced-fidelity* path (lighter 2D/metaball slime), not parity.
    **Scope it as a decision point with the user, don't auto-build blind.** Priority depends
@@ -123,9 +128,11 @@ re-run it to resume.**
 - **itch dashboard finalize:** mark the `html5` build "This file will be played in the
   browser", set embed viewport (1280×720) + fullscreen, set page Public.
 - **itch WebGPU-iframe test:** load the itch page — does the blob render? (Decides M4 priority.)
-- **Device verification (accumulated):** ViewCube feel, squish-flat, per-type **audio**, and
-  **FPS** after the 2× substep change — all shipped but only tsc/build-validated, not seen/heard
-  by a human yet. A device pass would de-risk the recent stack before piling on more.
+- **Device verification (accumulated):** ViewCube feel, squish-flat / **broad-platen press
+  feel** (is the ~½-blob footprint + strength right? consts `PRESS_RADIUS_SCALE`/`PRESS_DOWN`/
+  `PRESS_SPREAD` in `pointerForce.wgsl` are one tweak away), per-type **audio**, and **FPS**
+  after the 2× substep change — all shipped but only tsc/build-validated, not seen/heard by a
+  human yet. A device pass would de-risk the recent stack before piling on more.
 
 ## 10. Quick start for next session
 

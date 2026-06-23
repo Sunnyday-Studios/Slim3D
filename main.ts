@@ -15,6 +15,7 @@ import { Camera } from './camera'
 import { InputController } from './input'
 import { Controls } from './controls'
 import { ViewCube } from './viewcube'
+import { SlimeAudio } from './audio'
 
 const statusEl = document.getElementById('status') as HTMLDivElement
 function setStatus(msg: string, isError = false) {
@@ -114,14 +115,23 @@ async function main() {
     posvelBuffer, renderUniformBuffer, cubemapView
   )
   const camera = new Camera(canvas)
+
+  // M5: procedural slime AUDIO (zero-asset Web Audio synth). Lazily creates +
+  // resumes its AudioContext on the first canvas pointerdown (mobile-safe). Driven
+  // by the poke interaction (poke-start / press+drag / release) with a per-type
+  // timbre. Constructed before input/controls so both can hold the same instance.
+  const audio = new SlimeAudio()
+
   // M2: unified pointer input (mouse/touch/pen). Owns all canvas pointer events;
   // the camera no longer binds its own listeners. update() pushes the poke force.
-  const input = new InputController(canvas, camera, simulator)
+  // Also unlocks audio on first pointerdown and emits the poke-driven SFX hooks.
+  const input = new InputController(canvas, camera, simulator, audio)
 
   // M3: Slime Lab control panel (separate DOM; never pokes the canvas). Owns the
   // live Material/Style uniforms via sim.setMaterial / renderer.setStyle, and
-  // applies the default TYPE preset on construction.
-  const controls = new Controls(simulator, renderer)
+  // applies the default TYPE preset on construction. Also retimbres the audio on
+  // type select and owns the 🔊/🔇 mute button.
+  const controls = new Controls(simulator, renderer, audio)
 
   // M4: CSS-3D ViewCube ("rosette") orientation gizmo. Pure DOM overlay; owns its
   // own pointer events on its own element (never pokes the canvas). Mirrors the

@@ -24,6 +24,7 @@
 
 import { Camera } from './camera'
 import { MLSMPMSimulator } from './mls-mpm/mls-mpm'
+import { SlimeAudio } from './audio'
 
 // `fresh` is set ONLY in onDown (a genuine new tap). It lets a stationary tap
 // dent the slime, while a single finger left over from a 2->1 transition does
@@ -42,6 +43,13 @@ export class InputController {
   private canvas: HTMLCanvasElement
   private camera: Camera
   private sim: MLSMPMSimulator
+  // Optional procedural-audio sink. NULL = no audio wired (input still works).
+  // Audio is purely observational here — it NEVER influences the poke physics.
+  private audio: SlimeAudio | null
+
+  // Edge tracker so we fire SlimeAudio.onPokeStart exactly once per poke (on the
+  // inactive->active transition) and onPokeEnd exactly once on release.
+  private audioPokeActive = false
 
   private pointers = new Map<number, Pt>()
   private mode: Mode = 'none'
@@ -71,10 +79,11 @@ export class InputController {
   // active->inactive, then stay quiet while idle (saves a per-frame GPU write).
   private prevActive = false
 
-  constructor(canvas: HTMLCanvasElement, camera: Camera, simulator: MLSMPMSimulator) {
+  constructor(canvas: HTMLCanvasElement, camera: Camera, simulator: MLSMPMSimulator, audio: SlimeAudio | null = null) {
     this.canvas = canvas
     this.camera = camera
     this.sim = simulator
+    this.audio = audio
 
     // passive:false so preventDefault is honoured (browsers default wheel/touch
     // listeners to passive, which would silently ignore preventDefault).
@@ -111,6 +120,11 @@ export class InputController {
   // ---- pointer lifecycle ----
   private onDown = (e: PointerEvent) => {
     e.preventDefault()
+    // Audio-unlock MUST happen inside a real user gesture (iOS Safari starts the
+    // AudioContext 'suspended'). pointerdown is that gesture; unlock() is a no-op
+    // once the context is running. Done first so the context is live before any
+    // poke-start sound is requested this same gesture.
+    this.audio?.unlock()
     try { this.canvas.setPointerCapture(e.pointerId) } catch { /* invalid/already-up on some iOS builds */ }
     this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType, button: e.button, fresh: true })
     this.resolveMode()
@@ -273,6 +287,24 @@ export class InputController {
 
       const poke = this.camera.poke(this.pokeNdcX, this.pokeNdcY, this.pokeNdcPrevX, this.pokeNdcPrevY)
       this.sim.setPointerForce(poke.origin, poke.dir, poke.force, poke.radius, true, press)
+
+      // --- AUDIO (observational only; does not touch the physics above) ---
+      // Drag speed = |NDC delta| this frame (same delta the poke force uses),
+      // computed BEFORE we advance prev below.
+      if (this.audio) {
+        const dragSpeed = Math.hypot(this.pokeNdcX - this.pokeNdcPrevX, this.pokeNdcY - this.pokeNdcPrevY)
+        if (!this.audioPokeActive) {
+          // rising edge: a new poke just became active -> one juicy start pop.
+          // Only latch once onPokeStart actually fired (it returns false while the
+          // AudioContext is still 'suspended' on the very first poke, or while
+          // muted), so the unlock-gesture poke retries next frame and never loses
+          // its snap; un-muting mid-poke also re-fires the start pop.
+          if (this.audio.onPokeStart(press)) this.audioPokeActive = true
+        }
+        // throttled internally in audio.ts; cheap to call every frame.
+        this.audio.onPress(press, dragSpeed)
+      }
+
       // advance prev NDC for next frame's drag delta
       this.pokeNdcPrevX = this.pokeNdcX
       this.pokeNdcPrevY = this.pokeNdcY
@@ -281,6 +313,11 @@ export class InputController {
       // poke ended (or never started) -> reset the press ramp so the next tap
       // starts fresh at press=0.
       this.pokeStartMs = -1
+      // AUDIO: falling edge -> fade the squelch smear / stop crackle (once).
+      if (this.audioPokeActive) {
+        this.audioPokeActive = false
+        this.audio?.onPokeEnd()
+      }
       // Only write the "clear" uniform ONCE on the active->inactive edge; while
       // already idle, skip the per-frame GPU write entirely. The pass still runs
       // each frame but the shader early-returns on active<0.5 (cheap no-op).

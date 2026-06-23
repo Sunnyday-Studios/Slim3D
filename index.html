@@ -266,7 +266,13 @@
     </div>
 
     <div id="controls" class="panel">
-      <button id="reset">Reset blob</button>
+      <div id="controlsRow" style="display:flex; gap:8px; align-items:stretch;">
+        <button id="reset" style="flex:1 1 auto;">Reset blob</button>
+        <!-- Procedural slime-sound mute toggle. Default 🔊 (unmuted); audio is
+             silent until the first canvas gesture unlocks the AudioContext. -->
+        <button id="slMute" type="button" aria-pressed="false" aria-label="Mute slime sounds"
+                title="Sound on" style="flex:0 0 auto; min-width:44px; font-size:16px;">🔊</button>
+      </div>
       <label><input type="checkbox" id="showParticles" /> Show particles (debug)</label>
       <div id="hint"><b>1 finger</b> poke · <b>2 fingers</b> orbit/zoom<br /><b>Left-drag</b> poke · <b>Right-drag</b> orbit · <b>Scroll</b> zoom</div>
     </div>

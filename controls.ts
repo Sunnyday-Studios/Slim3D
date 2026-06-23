@@ -16,6 +16,7 @@
 
 import { MLSMPMSimulator } from './mls-mpm/mls-mpm'
 import { FluidRenderer } from './render/fluidRender'
+import { SlimeAudio } from './audio'
 
 export type Physics = { mu: number; lambda: number; viscosity: number; gravity: number; plasticity: number }
 export type Style = { color: [number, number, number]; gloss: number; opacity: number; foam: number }
@@ -96,6 +97,10 @@ const DEFAULT_PRESET_INDEX = 1 // Glossy (validated default visc/gravity)
 export class Controls {
   private sim: MLSMPMSimulator
   private renderer: FluidRenderer
+  // Optional procedural-audio sink. setType() retimbres the SFX per slime type;
+  // the mute button toggles it. NULL = no audio wired (panel still works).
+  private audio: SlimeAudio | null
+  private muteBtn: HTMLButtonElement | null = null
 
   // live working copies (so a color/finish/foam tweak doesn't clobber the rest)
   private phys: Physics = { ...PRESETS[DEFAULT_PRESET_INDEX].physics }
@@ -118,16 +123,18 @@ export class Controls {
   private foamChkEl!: HTMLInputElement
   private foamAmtEl!: HTMLInputElement
 
-  constructor(sim: MLSMPMSimulator, renderer: FluidRenderer) {
+  constructor(sim: MLSMPMSimulator, renderer: FluidRenderer, audio: SlimeAudio | null = null) {
     this.sim = sim
     this.renderer = renderer
+    this.audio = audio
     this.buildTypeButtons()
     this.buildSwatches()
     this.bindSliders()
     this.bindColor()
     this.bindFoam()
     this.bindToggle()
-    // apply default type on load
+    this.bindMute()
+    // apply default type on load (also primes the audio profile to the default type)
     this.applyPreset(DEFAULT_PRESET_INDEX)
   }
 
@@ -210,6 +217,31 @@ export class Controls {
     })
   }
 
+  // ---- MUTE toggle (🔊/🔇). Default UNMUTED; audio stays silent until the first
+  // canvas gesture unlocks the context anyway, so unmuted-by-default is safe. The
+  // button reflects/persists the muted state for the session. Touch-friendly (it
+  // lives in the #controls panel, NOT on the canvas, so tapping it never pokes). ----
+  private bindMute() {
+    const btn = document.getElementById('slMute') as HTMLButtonElement | null
+    if (!btn) return
+    this.muteBtn = btn
+    this.reflectMute(this.audio ? this.audio.isMuted() : false)
+    btn.addEventListener('click', () => {
+      // If audio isn't wired, still toggle the icon harmlessly.
+      const muted = this.audio ? this.audio.toggleMuted() : btn.getAttribute('aria-pressed') !== 'true'
+      this.reflectMute(muted)
+    })
+  }
+
+  private reflectMute(muted: boolean) {
+    const btn = this.muteBtn
+    if (!btn) return
+    btn.textContent = muted ? '🔇' : '🔊'
+    btn.setAttribute('aria-pressed', String(muted))
+    btn.setAttribute('aria-label', muted ? 'Unmute slime sounds' : 'Mute slime sounds')
+    btn.title = muted ? 'Sound off' : 'Sound on'
+  }
+
   // ---- apply a TYPE preset: physics + style + sync all slider/control positions ----
   private applyPreset(idx: number) {
     const p = PRESETS[idx]
@@ -223,6 +255,10 @@ export class Controls {
 
     // reflect active button
     this.typeButtons.forEach((b, i) => b.classList.toggle('active', i === idx))
+
+    // retimbre the procedural slime SFX to this type (Clear/Glossy juicy pops,
+    // Floam dense crackle, Butter muted squish, etc.). Keyed by preset name.
+    this.audio?.setType(p.name)
 
     // push slider DOM positions to match the preset
     this.muEl.value = String(this.phys.mu)

@@ -1,6 +1,6 @@
 # Slim3D — Session Hand-off
 
-**Read this first.** Clean breaking point as of commit `f480806` (Press-flatten broad platen).
+**Read this first.** Clean breaking point as of commit `e5fc61d` (Press-flatten fix).
 Everything below "Done" is committed, headless-validated, and deployed live. Next session starts
 at **Mix-ins** (§Remaining).
 
@@ -29,15 +29,16 @@ freeware. Kernel-selection rationale: [kernel-eval.md](kernel-eval.md).
 | ViewCube | `86ab434` | CSS-3D gizmo: tap-face / drag / Home, mobile-first |
 | Plasticity + extended-press | `bc0f7cd` | **3×3 SVD return mapping** (squish-flat that STAYS) + press/spread force |
 | Audio | `e952c35` | Procedural per-type pop/crackle/squelch (Web Audio, zero assets), mute, mobile-unlock |
-| Press-flatten v2 | `f480806` | **Broad downward platen** (≥½ blob footprint, near-uniform plateau, rim-only relief): a sustained press flattens the blob as one coherent slab instead of tearing it into pieces. Quick-tap dent unchanged; 48 B uniform + 128 B struct untouched (platen derived in-shader from ray∩floor). New harness probe = self-centered central density (no-separation gate) |
+| Press-flatten v2 | `f480806`, fix `e5fc61d` | **Broad downward platen** (≥½ blob footprint, near-uniform plateau): a sustained press flattens the blob as one coherent slab instead of tearing it into pieces. **`e5fc61d` fixed real-world fragmentation:** center the press on PERPENDICULAR distance to the ray (ray∩floor was ~tens of units off for the shallow default camera → tore the far edge) + a low **PRESS_VMAX=1.2** speed cap on press particles (fast-squirt at the floor was detaching particles past grid-kernel support). Quick-tap dent unchanged; 48 B uniform + 128 B struct untouched. Harness now uses an **angled ray** + a **connected-components cohesion gate** (largest piece ≥90%) |
 
 ## 3. Architecture / file map
 
 - **Sim (WebGPU compute), `mls-mpm/`:** 6 validated shaders `clearGrid`, `p2g_1`,
   `p2g_2` (elastic stress), `updateGrid` (gravity), `g2p` (F update + **SVD plasticity
   return mapping**), `copyPosition`; plus `pointerForce.wgsl` (poke DENT + **broad-platen
-  PRESS-FLATTEN**: wide vertical column = ray∩floor plane, near-uniform plateau down push,
-  radius = poke r × `PRESS_RADIUS_SCALE` 2.5 ≈ ≥½ blob; tunable consts at top of the file).
+  PRESS-FLATTEN**: both key off PERPENDICULAR distance to the ray so they center where you
+  pressed at any angle; press = near-uniform -Y plateau over radius poke r × `PRESS_RADIUS_SCALE`
+  2.5, with a low `PRESS_VMAX` 1.2 speed cap = anti-fragmentation; tunable consts atop the file).
   `mls-mpm.ts` orchestrates pipelines/bind-groups + owns the **Material uniform**.
   - **Particle struct = 128 B** `{position@0, v@16, C@32 (mat3x3), F@80 (mat3x3)}`. **Do
     not change** without re-validating everything.

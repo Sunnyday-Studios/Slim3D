@@ -7,7 +7,7 @@ name: Deploy to itch.io
 # Required repo config (Settings -> Secrets and variables -> Actions):
 #   - secret  BUTLER_API_KEY  : from https://itch.io/user/settings/api-keys
 #   - variable ITCH_USER      : your itch.io username (the part before the slash)
-# And the game page must already exist on itch.io as ITCH_USER/slim3d (Kind: HTML).
+# The target itch game is sunnydaytech/slime-and-stuff (already exists, Kind: HTML).
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ITCH_USER: ${{ vars.ITCH_USER }}
-      ITCH_GAME: slim3d
+      ITCH_GAME: slime-and-stuff
       CHANNEL: html5
     steps:
       - uses: actions/checkout@v4

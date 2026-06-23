@@ -5,26 +5,25 @@ itch.io web player serves it immediately and the itch desktop app delta-patches
 installed copies. This repo's GitHub Action does it automatically on every push to
 `main`.
 
-## One-time setup (you do these — they need your account)
+## Status: configured ✅ (2026-06-23)
 
-1. **itch.io account.** Create/sign in at https://itch.io.
+- **Target game:** `sunnydaytech.itch.io/slime-and-stuff`, channel `html5`.
+- **First build pushed** via butler (build `#1745328`).
+- **Auto-update CI wired:** repo secret `BUTLER_API_KEY` + variable
+  `ITCH_USER=sunnydaytech` are set, so every push to `main` auto-builds and publishes
+  via `.github/workflows/deploy-itch.yml`. Watch runs under the repo **Actions** tab.
 
-2. **Create the game page.** Dashboard → **Create new project**:
-   - **Kind of project:** HTML
-   - **Title:** Slim3D · **URL slug:** `slim3d` (so it's `https://<you>.itch.io/slim3d`)
-   - Check **"This file will be played in the browser"** (set after the first build uploads).
-   - **Embed:** "Embed in page", a generous viewport (e.g. 1280×720), enable **fullscreen**.
-   - Save as **Draft** (publish when ready).
+### Remaining (one-time, on the itch dashboard — butler can't toggle page settings)
 
-3. **API key.** https://itch.io/user/settings/api-keys → **Generate new key**.
+On the slime-and-stuff **Edit game** page:
+- Mark the `html5` build **"This file will be played in the browser."**
+- **Embed:** set a viewport (e.g. 1280×720) and enable **fullscreen**.
+- Set the page **Public** when ready to launch.
 
-4. **Wire CI** (auto-update on every push to `main`): in the GitHub repo
-   (`Sunnyday-Studios/Slim3D`) → **Settings → Secrets and variables → Actions**:
-   - **New repository secret:** `BUTLER_API_KEY` = the key from step 3
-   - **New repository variable:** `ITCH_USER` = your itch.io username
+### Rotating the API key
 
-That's it — the next push to `main` builds and publishes. Watch it under the repo's
-**Actions** tab.
+Generate a new key at https://itch.io/user/settings/api-keys, then re-set the secret:
+`gh secret set BUTLER_API_KEY --repo Sunnyday-Studios/Slim3D` (paste the new key).
 
 ## First publish (or any manual push)
 

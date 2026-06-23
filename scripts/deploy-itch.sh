@@ -12,7 +12,7 @@
 set -euo pipefail
 
 : "${ITCH_USER:?Set ITCH_USER to your itch.io username}"
-ITCH_GAME="${ITCH_GAME:-slim3d}"
+ITCH_GAME="${ITCH_GAME:-slime-and-stuff}"
 CHANNEL="${CHANNEL:-html5}"
 BUTLER="${BUTLER:-butler}"
 

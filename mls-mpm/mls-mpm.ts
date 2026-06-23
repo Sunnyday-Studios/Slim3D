@@ -4,6 +4,7 @@ import p2g_2 from './p2g_2.wgsl';
 import updateGrid from './updateGrid.wgsl';
 import g2p from './g2p.wgsl';
 import copyPosition from './copyPosition.wgsl'
+import pointerForce from './pointerForce.wgsl'
 
 import { numParticlesMax, renderUniformsViews } from '../common';
 
@@ -27,6 +28,7 @@ export class MLSMPMSimulator {
     updateGridPipeline: GPUComputePipeline
     g2pPipeline: GPUComputePipeline
     copyPositionPipeline: GPUComputePipeline
+    pointerForcePipeline: GPUComputePipeline
 
     clearGridBindGroup: GPUBindGroup
     p2g1BindGroup: GPUBindGroup
@@ -34,8 +36,29 @@ export class MLSMPMSimulator {
     updateGridBindGroup: GPUBindGroup
     g2pBindGroup: GPUBindGroup
     copyPositionBindGroup: GPUBindGroup
+    pointerForceBindGroup: GPUBindGroup
 
     particleBuffer: GPUBuffer
+    pointerUniformBuffer: GPUBuffer
+
+    // CPU-side scratch for the 48-byte pointer uniform (see writePointerUniform).
+    private pointerUniformValues = new ArrayBuffer(48)
+    private pointerViews = {
+        ray_origin: new Float32Array(this.pointerUniformValues, 0, 3),
+        radius:     new Float32Array(this.pointerUniformValues, 12, 1),
+        ray_dir:    new Float32Array(this.pointerUniformValues, 16, 3),
+        strength:   new Float32Array(this.pointerUniformValues, 28, 1),
+        force:      new Float32Array(this.pointerUniformValues, 32, 3),
+        active:     new Float32Array(this.pointerUniformValues, 44, 1),
+    }
+
+    // Bound on injected per-particle delta-v. Two limits apply: (1) the P2G atomics
+    // (fixed_point_multiplier=1e6 over i32 => +/-~2147 magnitude/channel before silent
+    // overflow), and — the binding one — (2) ELASTIC STABILITY: a coherent injection
+    // across the poke radius raises the velocity gradient C, and F=(I+dt*C)*F can run
+    // away. Headless poke tests blew up at sustained |v|=4 and are stable at 1.5, so we
+    // cap here; pointerForce.wgsl also hard-clamps post-injection speed as a safety net.
+    static readonly MAX_INJECT_V = 1.5
 
     device: GPUDevice
 
@@ -51,6 +74,7 @@ export class MLSMPMSimulator {
         const updateGridModule = device.createShaderModule({ code: updateGrid });
         const g2pModule = device.createShaderModule({ code: g2p });
         const copyPositionModule = device.createShaderModule({ code: copyPosition });
+        const pointerForceModule = device.createShaderModule({ code: pointerForce });
 
         const constants = {
             // Newtonian leftovers (stiffness/restDensity) are no longer used by the
@@ -124,10 +148,18 @@ export class MLSMPMSimulator {
             }
         });
         this.copyPositionPipeline = device.createComputePipeline({
-            label: "copy position pipeline", 
-            layout: 'auto', 
+            label: "copy position pipeline",
+            layout: 'auto',
             compute: {
-                module: copyPositionModule, 
+                module: copyPositionModule,
+            }
+        });
+        // M2 poke pass — independent of the 6 validated pipelines above.
+        this.pointerForcePipeline = device.createComputePipeline({
+            label: "pointer force pipeline",
+            layout: 'auto',
+            compute: {
+                module: pointerForceModule,
             }
         });
 
@@ -152,6 +184,16 @@ export class MLSMPMSimulator {
         })
         device.queue.writeBuffer(this.initBoxSizeBuffer, 0, initBoxSizeValues);
         device.queue.writeBuffer(this.realBoxSizeBuffer, 0, realBoxSizeValues);
+
+        // 48-byte pointer uniform (ray_origin, radius, ray_dir, strength, force, active).
+        this.pointerUniformBuffer = device.createBuffer({
+            label: 'pointer force uniform buffer',
+            size: this.pointerUniformValues.byteLength, // 48
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        })
+        // start inactive
+        this.pointerViews.active[0] = 0
+        device.queue.writeBuffer(this.pointerUniformBuffer, 0, this.pointerUniformValues)
 
         // BindGroup
         this.clearGridBindGroup = device.createBindGroup({
@@ -196,8 +238,15 @@ export class MLSMPMSimulator {
         this.copyPositionBindGroup = device.createBindGroup({
             layout: this.copyPositionPipeline.getBindGroupLayout(0),
             entries: [
-                { binding: 0, resource: { buffer: particleBuffer }}, 
-                { binding: 1, resource: { buffer: posvelBuffer }}, 
+                { binding: 0, resource: { buffer: particleBuffer }},
+                { binding: 1, resource: { buffer: posvelBuffer }},
+            ]
+        })
+        this.pointerForceBindGroup = device.createBindGroup({
+            layout: this.pointerForcePipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: particleBuffer }},
+                { binding: 1, resource: { buffer: this.pointerUniformBuffer }},
             ]
         })
 
@@ -281,6 +330,45 @@ export class MLSMPMSimulator {
             computePass.dispatchWorkgroups(Math.ceil(this.numParticles / 64))             
         }
         computePass.end()
+    }
+
+    // Write the pointer uniform. `force` is the world-space per-frame delta-v to add
+    // to nearby particles; we CLAMP its magnitude to MAX_INJECT_V so we never feed
+    // the 1e6 fixed-point atomics past their ~+/-2147 ceiling (p2g sums per cell).
+    setPointerForce(
+        rayOrigin: number[], rayDir: number[], force: number[],
+        radius: number, active: boolean
+    ) {
+        // normalize ray_dir defensively (the WGSL distance-to-ray math assumes |D|=1)
+        let dx = rayDir[0], dy = rayDir[1], dz = rayDir[2]
+        const dl = Math.hypot(dx, dy, dz) || 1
+        dx /= dl; dy /= dl; dz /= dl
+
+        // clamp injected delta-v magnitude
+        let fx = force[0], fy = force[1], fz = force[2]
+        const fl = Math.hypot(fx, fy, fz)
+        const cap = MLSMPMSimulator.MAX_INJECT_V
+        if (fl > cap) { const s = cap / fl; fx *= s; fy *= s; fz *= s }
+
+        this.pointerViews.ray_origin.set([rayOrigin[0], rayOrigin[1], rayOrigin[2]])
+        this.pointerViews.radius[0] = radius
+        this.pointerViews.ray_dir.set([dx, dy, dz])
+        this.pointerViews.strength[0] = 1.0 // reserved; force is pre-scaled CPU-side
+        this.pointerViews.force.set([fx, fy, fz])
+        this.pointerViews.active[0] = active ? 1.0 : 0.0
+
+        this.device.queue.writeBuffer(this.pointerUniformBuffer, 0, this.pointerUniformValues)
+    }
+
+    // Dispatch the poke pass ONCE per frame. Call right after execute(). It is a
+    // separate compute pass so the 6 validated passes stay byte-untouched. When the
+    // uniform's `active` is 0 the shader early-returns, so this is cheap when idle.
+    applyPointerForce(commandEncoder: GPUCommandEncoder) {
+        const pass = commandEncoder.beginComputePass()
+        pass.setBindGroup(0, this.pointerForceBindGroup)
+        pass.setPipeline(this.pointerForcePipeline)
+        pass.dispatchWorkgroups(Math.ceil(this.numParticles / 64))
+        pass.end()
     }
 
     changeBoxSize(realBoxSize: number[]) {

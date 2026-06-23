@@ -12,6 +12,7 @@ import { MLSMPMSimulator } from './mls-mpm/mls-mpm'
 import { renderUniformsViews, renderUniformsValues, numParticlesMax } from './common'
 import { FluidRenderer } from './render/fluidRender'
 import { Camera } from './camera'
+import { InputController } from './input'
 
 const statusEl = document.getElementById('status') as HTMLDivElement
 function setStatus(msg: string, isError = false) {
@@ -111,6 +112,9 @@ async function main() {
     posvelBuffer, renderUniformBuffer, cubemapView
   )
   const camera = new Camera(canvas)
+  // M2: unified pointer input (mouse/touch/pen). Owns all canvas pointer events;
+  // the camera no longer binds its own listeners. update() pushes the poke force.
+  const input = new InputController(canvas, camera, simulator)
 
   function resetBlob() {
     simulator.reset(NUM_PARTICLES, INIT_BOX)
@@ -131,10 +135,17 @@ async function main() {
   let frames = 0
   let lastFpsT = performance.now()
   function frame() {
+    // M2: compute the pointer poke and write the pointer uniform BEFORE the sim
+    // runs, so this frame's force is live for the next p2g scatter.
+    input.update()
+
     device.queue.writeBuffer(renderUniformBuffer, 0, renderUniformsValues)
 
     const encoder = device.createCommandEncoder()
     simulator.execute(encoder)
+    // Inject the poke once, AFTER the 2-substep loop (keeps the 6 validated
+    // shaders byte-untouched; next frame's p2g scatters the kick through the grid).
+    simulator.applyPointerForce(encoder)
     renderer.execute(context, encoder, simulator.numParticles, showParticles.checked)
     device.queue.submit([encoder.finish()])
 

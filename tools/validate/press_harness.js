@@ -154,7 +154,45 @@ async function stats() {
     const o = i * FLOATS; const x = f[o], z = f[o + 2];
     if (Number.isFinite(x) && Number.isFinite(z) && Math.hypot(x - cx, z - cz) < CORE_R) core++;
   }
-  return { nan, maxP, maxF, height: maxY - minY, spread: sdx + sdz, cx, cz, coreFrac: core / Math.max(1, cnt) };
+  // COHESION — the direct anti-fragmentation gate. Bucket particles into a 1-unit
+  // occupancy grid, flood-fill (26-connectivity, = MPM grid coupling range), and
+  // report the largest connected component's particle share. One blob -> ~1.0; a blob
+  // torn into clumps -> < 1.0 (and the number of components > 1).
+  const GX = Math.ceil(BOX[0]) + 2, GY = Math.ceil(BOX[1]) + 2, GZ = Math.ceil(BOX[2]) + 2;
+  const key = (x, y, z) => (x * GY + y) * GZ + z;
+  const count = new Map();
+  for (let i = 0; i < N; i++) {
+    const o = i * FLOATS; const x = f[o], y = f[o + 1], z = f[o + 2];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    const gx = Math.min(GX - 1, Math.max(0, Math.floor(x) + 1));
+    const gy = Math.min(GY - 1, Math.max(0, Math.floor(y) + 1));
+    const gz = Math.min(GZ - 1, Math.max(0, Math.floor(z) + 1));
+    const k = key(gx, gy, gz);
+    count.set(k, (count.get(k) || 0) + 1);
+  }
+  const seen = new Set();
+  let maxComp = 0, comps = 0;
+  for (const start of count.keys()) {
+    if (seen.has(start)) continue;
+    comps++;
+    let sum = 0; const stack = [start]; seen.add(start);
+    while (stack.length) {
+      const k = stack.pop(); sum += count.get(k);
+      const z = k % GZ, y = ((k - z) / GZ) % GY, x = ((k - z) / GZ - y) / GY;
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+        if (!dx && !dy && !dz) continue;
+        const nx = x + dx, ny = y + dy, nz = z + dz;
+        if (nx < 0 || ny < 0 || nz < 0 || nx >= GX || ny >= GY || nz >= GZ) continue;
+        const nk = key(nx, ny, nz);
+        if (count.has(nk) && !seen.has(nk)) { seen.add(nk); stack.push(nk); }
+      }
+    }
+    if (sum > maxComp) maxComp = sum;
+  }
+  return {
+    nan, maxP, maxF, height: maxY - minY, spread: sdx + sdz, cx, cz,
+    coreFrac: core / Math.max(1, cnt), cohesion: maxComp / Math.max(1, cnt), comps,
+  };
 }
 
 console.log(`seeded ${N} particles; settling ${SETTLE} steps...`);
@@ -162,12 +200,18 @@ writePointer([0, 0, 0], [0, 0, 1], [0, 0, 0], 0, 0, false);
 for (let s = 0; s < SETTLE; s++) { const enc = device.createCommandEncoder(); step(enc); device.queue.submit([enc.finish()]); }
 await device.queue.onSubmittedWorkDone();
 const before = await stats();
-console.log(`[settled] h=${before.height.toFixed(2)} spread=${before.spread.toFixed(2)} core=${before.coreFrac.toFixed(3)} centroid=(${before.cx.toFixed(1)},${before.cz.toFixed(1)}) nan=${before.nan} max|F|=${before.maxF.toFixed(2)}`);
+console.log(`[settled] h=${before.height.toFixed(2)} spread=${before.spread.toFixed(2)} core=${before.coreFrac.toFixed(3)} cohesion=${before.cohesion.toFixed(3)}(${before.comps}c) centroid=(${before.cx.toFixed(1)},${before.cz.toFixed(1)}) nan=${before.nan} max|F|=${before.maxF.toFixed(2)}`);
 
-// Aim BOTH the tap and the press straight down at the blob's settled CENTROID (the
-// box center is the blob's z-edge, since the blob fills only z∈[3,30]). Pressing the
-// real center is what the user does, and lets the central-density tear probe be fair.
+// Aim the tap straight down at the blob's settled CENTROID. The PRESS uses a SHALLOW
+// ANGLED ray (≈15° below horizontal, like the default camera) that passes THROUGH the
+// centroid — this is the real-world case that the old ray∩floor centering got wrong
+// (it placed the platen ~tens of units past the blob and tore it). With perpendicular
+// centering the press must still land on the blob and stay cohesive.
 const AIM = [before.cx, BOX[1] * 2, before.cz];
+const PITCH = 15 * Math.PI / 180;                              // shallow, like the camera
+const PDIR = [Math.cos(PITCH), -Math.sin(PITCH), 0];          // down-forward along +x
+const PT = [before.cx, 4, before.cz];                          // aim point inside the blob
+const PORIGIN = [PT[0] - 60 * PDIR[0], PT[1] - 60 * PDIR[1], PT[2] - 60 * PDIR[2]];
 
 // QUICK TAP: short, press=0 -> dent only, height barely changes.
 writePointer(AIM, [0, -1, 0], [0, -0.35, 0], 6.0, 0.0, true);
@@ -178,19 +222,19 @@ await device.queue.onSubmittedWorkDone();
 const tap = await stats();
 console.log(`[tap]     h=${tap.height.toFixed(2)} spread=${tap.spread.toFixed(2)} (Δh=${(tap.height-before.height).toFixed(2)}) nan=${tap.nan} max|F|=${tap.maxF.toFixed(2)}`);
 
-// SUSTAINED PRESS: ramp press 0->1 over first ~half, then hold at 1. Vertical ray
-// down the blob center, inward push -Y + (in-shader) radial-out + down.
-console.log(`pressing (ramp 0->1) for ${PRESS} steps...`);
+// SUSTAINED PRESS: ramp press 0->1 over first ~half, then hold at 1. SHALLOW ANGLED
+// ray through the centroid (real-camera case); in-shader the press is a broad -Y platen.
+console.log(`pressing (ramp 0->1, ${(PITCH*180/Math.PI).toFixed(0)}° angled ray) for ${PRESS} steps...`);
 for (let s = 0; s < PRESS; s++) {
   const press = Math.min(1, s / (PRESS * 0.4)); // ~0.5s-equiv ramp then hold
-  writePointer(AIM, [0, -1, 0], [0, -0.35, 0], 7.0, press, true);
+  writePointer(PORIGIN, PDIR, [PDIR[0] * 0.35, PDIR[1] * 0.35, PDIR[2] * 0.35], 7.0, press, true);
   const enc = device.createCommandEncoder(); step(enc); applyPoke(enc); device.queue.submit([enc.finish()]);
 }
 writePointer([0, 0, 0], [0, 0, 1], [0, 0, 0], 0, 0, false);
 for (let s = 0; s < 40; s++) { const enc = device.createCommandEncoder(); step(enc); device.queue.submit([enc.finish()]); } // settle, shape should HOLD (plasticity)
 await device.queue.onSubmittedWorkDone();
 const after = await stats();
-console.log(`[pressed] h=${after.height.toFixed(2)} spread=${after.spread.toFixed(2)} core=${after.coreFrac.toFixed(3)} (Δh=${(after.height-before.height).toFixed(2)} Δspread=${(after.spread-before.spread).toFixed(2)}) nan=${after.nan} max|F|=${after.maxF.toFixed(2)}`);
+console.log(`[pressed] h=${after.height.toFixed(2)} spread=${after.spread.toFixed(2)} core=${after.coreFrac.toFixed(3)} cohesion=${after.cohesion.toFixed(3)}(${after.comps}c) (Δh=${(after.height-before.height).toFixed(2)} Δspread=${(after.spread-before.spread).toFixed(2)}) nan=${after.nan} max|F|=${after.maxF.toFixed(2)}`);
 
 const stable = after.nan === 0 && after.maxP < BOX[0] * 2 && after.maxF < 1e4;
 // PANCAKE signal: a sustained press makes the blob spread its FOOTPRINT outward
@@ -211,8 +255,16 @@ const tapMild = tapSpread < pressSpread - 0.5;
 // pieces) -> self-centered coreFrac ~0. The coherent platen keeps the center populated.
 // A wide flatten lowers the peak (spreads out), so we require BOTH an absolute floor
 // (center is genuinely not a void) AND that it keep a fair share of its dense core.
-const coreRetained = after.coreFrac >= 0.04 && after.coreFrac >= before.coreFrac * 0.35;
-console.log(`[core] before=${before.coreFrac.toFixed(3)} -> after=${after.coreFrac.toFixed(3)} (retained ${(after.coreFrac / Math.max(1e-6, before.coreFrac) * 100).toFixed(0)}%) noSeparation=${coreRetained}`);
-const pass = stable && flattened && tapMild && coreRetained;
-console.log(`RESULT: ${pass ? "PASS" : "FAIL"} — stable=${stable} flattened=${flattened} (Δspread=${pressSpread.toFixed(2)} Δh=${(-pressHeight).toFixed(2)}) tap<press=${tapMild} (tapΔspread=${tapSpread.toFixed(2)}) noSeparation=${coreRetained}`);
+// central density — INFORMATIONAL only. A wide-but-connected pancake legitimately
+// thins its center (it's a flat sheet, not a peak), so this can drop a lot WITHOUT any
+// tearing. Connected-components (below) is the authoritative no-tear gate; coreFrac is
+// kept just as a readout of how concentrated vs. spread the result is.
+console.log(`[core] before=${before.coreFrac.toFixed(3)} -> after=${after.coreFrac.toFixed(3)} (info only; cohesion is the tear gate)`);
+// NO-FRAGMENTATION (the gate that maps to the user's "splitting into pieces"): the blob
+// must stay essentially ONE connected piece. Largest connected component must hold >=90%
+// of the mass (a little surface shedding is fine), vs. a clean ~1.0 when settled.
+const cohesive = after.cohesion >= 0.90;
+console.log(`[cohesion] settled=${before.cohesion.toFixed(3)}(${before.comps}c) -> pressed=${after.cohesion.toFixed(3)}(${after.comps}c) noFragment=${cohesive}`);
+const pass = stable && flattened && tapMild && cohesive;
+console.log(`RESULT: ${pass ? "PASS" : "FAIL"} — stable=${stable} flattened=${flattened} (Δspread=${pressSpread.toFixed(2)} Δh=${(-pressHeight).toFixed(2)}) tap<press=${tapMild} noFragment=${cohesive} (pressed ${after.comps} pieces, largest=${(after.cohesion*100).toFixed(0)}%)`);
 Deno.exit(pass ? 0 : 1);

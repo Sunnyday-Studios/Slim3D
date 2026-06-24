@@ -8,6 +8,7 @@ export interface PokeForce {
   dir: number[]      // normalized ray direction (into the scene)
   force: number[]    // world-space per-frame delta-v (pre-clamped here; re-clamped in setPointerForce)
   radius: number     // world-space poke radius
+  center: number[]   // world contact point under the cursor (ray∩target plane) — press platen center
 }
 
 export class Camera {
@@ -232,6 +233,8 @@ export class Camera {
       (cur.point[1] - prev.point[1]) * DRAG + dir[1] * PUSH,
       (cur.point[2] - prev.point[2]) * DRAG + dir[2] * PUSH,
     ]
-    return { origin: cur.origin, dir, force, radius: 6.0 }
+    // cur.point = world contact under the cursor (on the target plane). The press uses
+    // its xz as the EVEN horizontal-platen center, so the squish is the same at any angle.
+    return { origin: cur.origin, dir, force, radius: 6.0, center: cur.point }
   }
 }

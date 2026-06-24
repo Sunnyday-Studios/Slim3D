@@ -49,7 +49,7 @@ const U = GPUBufferUsage.UNIFORM, S = GPUBufferUsage.STORAGE, CD = GPUBufferUsag
 const b = (sz, us) => device.createBuffer({ size: sz, usage: us });
 const particleBuf = b(STRUCT * N_REQ, S | CS | CD), cellBuf = b(CELL * maxGrid, S | CD), posvelBuf = b(32 * N_REQ, S | CD);
 // Material uniform is now 32B std140: [mu,lambda,visc,gravity, plasticity, pad,pad,pad].
-const realBox = b(12, U | CD), initBox = b(12, U | CD), ptr = b(48, U | CD), mat = b(32, U | CD);
+const realBox = b(12, U | CD), initBox = b(12, U | CD), ptr = b(64, U | CD), mat = b(32, U | CD);
 device.queue.writeBuffer(realBox, 0, new Float32Array(BOX));
 device.queue.writeBuffer(initBox, 0, new Float32Array(BOX));
 // setMat accepts 4 or 5 entries; missing plasticity defaults to 0 (fully elastic).
@@ -97,8 +97,9 @@ function step(enc) {
 function applyPoke(enc) { const p = enc.beginComputePass(); p.setBindGroup(0, bgs.pointerForce); p.setPipeline(pipes.pointerForce); p.dispatchWorkgroups(wg(N)); p.end(); }
 function setPtr(o, d, f, r, on, press = 0) {
   const dl = Math.hypot(...d) || 1; const dn = d.map((x) => x / dl); let fl = Math.hypot(...f); if (fl > 1.5) f = f.map((x) => (x / fl) * 1.5);
-  // A[7] = press (0..1 sustained-press ramp -> pointerForce radial-out + down spread)
-  const A = new Float32Array(12); A[0] = o[0]; A[1] = o[1]; A[2] = o[2]; A[3] = r; A[4] = dn[0]; A[5] = dn[1]; A[6] = dn[2]; A[7] = Math.min(1, Math.max(0, press)); A[8] = f[0]; A[9] = f[1]; A[10] = f[2]; A[11] = on ? 1 : 0;
+  // A[7] = press (0..1 sustained-press ramp). A[12..14] = contact (platen center); this
+  // poke test only dents (press=0) so contact is unused, but the buffer is 64B now.
+  const A = new Float32Array(16); A[0] = o[0]; A[1] = o[1]; A[2] = o[2]; A[3] = r; A[4] = dn[0]; A[5] = dn[1]; A[6] = dn[2]; A[7] = Math.min(1, Math.max(0, press)); A[8] = f[0]; A[9] = f[1]; A[10] = f[2]; A[11] = on ? 1 : 0;
   device.queue.writeBuffer(ptr, 0, A);
 }
 const staging = b(STRUCT * N, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);

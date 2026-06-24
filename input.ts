@@ -286,7 +286,7 @@ export class InputController {
       const press = tRaw * tRaw * (3 - 2 * tRaw) // smoothstep ease-in
 
       const poke = this.camera.poke(this.pokeNdcX, this.pokeNdcY, this.pokeNdcPrevX, this.pokeNdcPrevY)
-      this.sim.setPointerForce(poke.origin, poke.dir, poke.force, poke.radius, true, press)
+      this.sim.setPointerForce(poke.origin, poke.dir, poke.force, poke.radius, true, press, poke.center)
 
       // --- AUDIO (observational only; does not touch the physics above) ---
       // Drag speed = |NDC delta| this frame (same delta the poke force uses),

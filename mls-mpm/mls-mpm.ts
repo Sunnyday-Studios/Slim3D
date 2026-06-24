@@ -64,8 +64,8 @@ export class MLSMPMSimulator {
     // (tight yield -> reshapes & holds). Default 0 preserves the validated baseline.
     static readonly DEFAULT_PLASTICITY = 0.0
 
-    // CPU-side scratch for the 48-byte pointer uniform (see writePointerUniform).
-    private pointerUniformValues = new ArrayBuffer(48)
+    // CPU-side scratch for the 64-byte pointer uniform (see setPointerForce).
+    private pointerUniformValues = new ArrayBuffer(64)
     private pointerViews = {
         ray_origin: new Float32Array(this.pointerUniformValues, 0, 3),
         radius:     new Float32Array(this.pointerUniformValues, 12, 1),
@@ -73,6 +73,7 @@ export class MLSMPMSimulator {
         press:      new Float32Array(this.pointerUniformValues, 28, 1), // 0..1 sustained-press ramp
         force:      new Float32Array(this.pointerUniformValues, 32, 3),
         active:     new Float32Array(this.pointerUniformValues, 44, 1),
+        contact:    new Float32Array(this.pointerUniformValues, 48, 3), // platen center (world xz used)
     }
 
     // Bound on injected per-particle delta-v. Two limits apply: (1) the P2G atomics
@@ -417,7 +418,10 @@ export class MLSMPMSimulator {
     // internal |v|<=4 cap, so press never breaks elastic stability.
     setPointerForce(
         rayOrigin: number[], rayDir: number[], force: number[],
-        radius: number, active: boolean, press: number = 0
+        radius: number, active: boolean, press: number = 0,
+        // World point under the cursor on the blob (camera.poke's ray∩target hit). Its
+        // .xz is the EVEN-PLATEN center for the press; ignored when press == 0.
+        contact: number[] = [0, 0, 0],
     ) {
         // normalize ray_dir defensively (the WGSL distance-to-ray math assumes |D|=1)
         let dx = rayDir[0], dy = rayDir[1], dz = rayDir[2]
@@ -436,6 +440,7 @@ export class MLSMPMSimulator {
         this.pointerViews.press[0] = Math.min(1, Math.max(0, press)) // 0..1 ramp
         this.pointerViews.force.set([fx, fy, fz])
         this.pointerViews.active[0] = active ? 1.0 : 0.0
+        this.pointerViews.contact.set([contact[0], contact[1], contact[2]])
 
         this.device.queue.writeBuffer(this.pointerUniformBuffer, 0, this.pointerUniformValues)
     }

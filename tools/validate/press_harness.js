@@ -64,16 +64,19 @@ const gridCount = Math.ceil(BOX[0]) * Math.ceil(BOX[1]) * Math.ceil(BOX[2]);
 const buf = (size, usage) => device.createBuffer({ size, usage });
 const S = GPUBufferUsage.STORAGE, U = GPUBufferUsage.UNIFORM, CD = GPUBufferUsage.COPY_DST, CS = GPUBufferUsage.COPY_SRC;
 const particleBuf = buf(STRUCT * N_REQ, S | CS | CD), cellBuf = buf(CELL * maxGrid, S | CD), posvelBuf = buf(32 * N_REQ, S | CD);
-const realBox = buf(12, U | CD), initBox = buf(12, U | CD), ptr = buf(48, U | CD), mat = buf(32, U | CD);
+const realBox = buf(12, U | CD), initBox = buf(12, U | CD), ptr = buf(64, U | CD), mat = buf(32, U | CD);
 device.queue.writeBuffer(realBox, 0, new Float32Array(BOX));
 device.queue.writeBuffer(initBox, 0, new Float32Array(BOX));
 device.queue.writeBuffer(mat, 0, new Float32Array(MAT));
 
-// seed blob, F=identity
+// seed blob, F=identity. Loop order: Y OUTER so the N_REQ cap truncates the TOP layers
+// (height), leaving the full x,z FOOTPRINT filled -> a wide, SYMMETRIC slab centered in
+// x,z (matches the real app's wide blob). If x were the outer loop the cap would clip the
+// x-range into a narrow off-center column that settles lopsided and falsely fails evenness.
 const data = new Float32Array(FLOATS * N_REQ);
 let n = 0;
-outer: for (let i = 3; i < BOX[0] - 4; i += 0.65)
-  for (let j = 0; j < BOX[1] * 0.8; j += 0.65)
+outer: for (let j = 0; j < BOX[1] * 0.8; j += 0.65)
+  for (let i = 3; i < BOX[0] - 4; i += 0.65)
     for (let k = 3; k < BOX[2] / 2; k += 0.65) {
       if (n >= N_REQ) break outer;
       const o = n * FLOATS;
@@ -113,13 +116,14 @@ function applyPoke(enc) {
 }
 // Pointer uniform (48B): ray_origin@0, radius@12, ray_dir@16, press@28(strength),
 // force@32, active@44. press in [0,1] drives radial-outward + downward flatten.
-function writePointer(o, d, f, r, press, active) {
+function writePointer(o, d, f, r, press, active, contact = [0, 0, 0]) {
   const dl = Math.hypot(...d) || 1; const dn = d.map((x) => x / dl);
   let fl = Math.hypot(...f); if (fl > 1.5) f = f.map((x) => (x / fl) * 1.5); // MAX_INJECT_V
-  const a = new ArrayBuffer(48); const F = new Float32Array(a);
+  const a = new ArrayBuffer(64); const F = new Float32Array(a);
   F[0] = o[0]; F[1] = o[1]; F[2] = o[2]; F[3] = r;
   F[4] = dn[0]; F[5] = dn[1]; F[6] = dn[2]; F[7] = press;
   F[8] = f[0]; F[9] = f[1]; F[10] = f[2]; F[11] = active ? 1 : 0;
+  F[12] = contact[0]; F[13] = contact[1]; F[14] = contact[2]; // platen center (xz used)
   device.queue.writeBuffer(ptr, 0, a);
 }
 
@@ -190,7 +194,7 @@ async function stats() {
     if (sum > maxComp) maxComp = sum;
   }
   return {
-    nan, maxP, maxF, height: maxY - minY, spread: sdx + sdz, cx, cz,
+    nan, maxP, maxF, height: maxY - minY, spread: sdx + sdz, sdx, sdz, cx, cz,
     coreFrac: core / Math.max(1, cnt), cohesion: maxComp / Math.max(1, cnt), comps,
   };
 }
@@ -227,7 +231,9 @@ console.log(`[tap]     h=${tap.height.toFixed(2)} spread=${tap.spread.toFixed(2)
 console.log(`pressing (ramp 0->1, ${(PITCH*180/Math.PI).toFixed(0)}° angled ray) for ${PRESS} steps...`);
 for (let s = 0; s < PRESS; s++) {
   const press = Math.min(1, s / (PRESS * 0.4)); // ~0.5s-equiv ramp then hold
-  writePointer(PORIGIN, PDIR, [PDIR[0] * 0.35, PDIR[1] * 0.35, PDIR[2] * 0.35], 7.0, press, true);
+  // contact = PT, the point on the blob the angled ray hits (the CPU supplies this live);
+  // the press platen centers on its xz, so the squish lands under the cursor, evenly.
+  writePointer(PORIGIN, PDIR, [PDIR[0] * 0.35, PDIR[1] * 0.35, PDIR[2] * 0.35], 7.0, press, true, PT);
   const enc = device.createCommandEncoder(); step(enc); applyPoke(enc); device.queue.submit([enc.finish()]);
 }
 writePointer([0, 0, 0], [0, 0, 1], [0, 0, 0], 0, 0, false);
@@ -265,6 +271,9 @@ console.log(`[core] before=${before.coreFrac.toFixed(3)} -> after=${after.coreFr
 // of the mass (a little surface shedding is fine), vs. a clean ~1.0 when settled.
 const cohesive = after.cohesion >= 0.90;
 console.log(`[cohesion] settled=${before.cohesion.toFixed(3)}(${before.comps}c) -> pressed=${after.cohesion.toFixed(3)}(${after.comps}c) noFragment=${cohesive}`);
+// EVENNESS readout — the horizontal disc platen should grow the footprint comparably in
+// x and z (not a one-sided / elongated squish). Informational; geometry guarantees it.
+console.log(`[even] Δspread x=${(after.sdx-before.sdx).toFixed(2)} z=${(after.sdz-before.sdz).toFixed(2)} (close => even squish)`);
 const pass = stable && flattened && tapMild && cohesive;
 console.log(`RESULT: ${pass ? "PASS" : "FAIL"} — stable=${stable} flattened=${flattened} (Δspread=${pressSpread.toFixed(2)} Δh=${(-pressHeight).toFixed(2)}) tap<press=${tapMild} noFragment=${cohesive} (pressed ${after.comps} pieces, largest=${(after.cohesion*100).toFixed(0)}%)`);
 Deno.exit(pass ? 0 : 1);

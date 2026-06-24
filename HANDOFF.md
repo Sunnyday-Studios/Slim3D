@@ -70,6 +70,14 @@ headless WebGPU** (wgpu + the same `naga` validator) on the box's real NVIDIA GP
 - **Harnesses (preserved in `tools/validate/`):** `slimelab_harness.js` (compiles all 14
   shaders, runs the sim with the 32 B material uniform, sweeps material×plasticity corners
   for stability, persistence test) and `press_harness.js` (press-flatten test).
+- **`shot_harness.js` = headless GAMEPLAY SCREENSHOT generator.** Runs the sim + the FULL
+  fluid render pipeline (mirrors `fluidRender.ts`, procedural env cubemap) to an offscreen
+  texture, reads pixels back, writes a PNG (real DEFLATE via `CompressionStream`). No
+  browser/canvas. Env knobs: `SHOT_COLOR/OPACITY/GLOSS/FOAM`, `SHOT_YAW/PITCH/DIST`,
+  `SHOT_W/H`, `SHOT_PRESS=1`, `SHOT_MODE=sphere`. `--allow-write`. Output in `media/`. Used
+  to make the itch cover/screenshots (the page gallery itself is dashboard-only — butler
+  can't set it). NOTE: itch CI auto-deploy needs a fresh `BUTLER_API_KEY` secret (the old one
+  401/403s); the live build is pushed via LOCAL butler meanwhile.
 - **Setup (one-time):** `cd <a temp dir>; npm init -y; npm install deno` →
   `./node_modules/.bin/deno run --unstable-webgpu --allow-read <harness>.js`. The harnesses
   read shaders by **absolute path** (`d:/SunnydayTech/Studio/Slim3D/mls-mpm`), so copy them

@@ -70,14 +70,17 @@ headless WebGPU** (wgpu + the same `naga` validator) on the box's real NVIDIA GP
 - **Harnesses (preserved in `tools/validate/`):** `slimelab_harness.js` (compiles all 14
   shaders, runs the sim with the 32 B material uniform, sweeps material×plasticity corners
   for stability, persistence test) and `press_harness.js` (press-flatten test).
-- **`shot_harness.js` = headless GAMEPLAY SCREENSHOT generator.** Runs the sim + the FULL
-  fluid render pipeline (mirrors `fluidRender.ts`, procedural env cubemap) to an offscreen
-  texture, reads pixels back, writes a PNG (real DEFLATE via `CompressionStream`). No
-  browser/canvas. Env knobs: `SHOT_COLOR/OPACITY/GLOSS/FOAM`, `SHOT_YAW/PITCH/DIST`,
-  `SHOT_W/H`, `SHOT_PRESS=1`, `SHOT_MODE=sphere`. `--allow-write`. Output in `media/`. Used
-  to make the itch cover/screenshots (the page gallery itself is dashboard-only — butler
-  can't set it). NOTE: itch CI auto-deploy needs a fresh `BUTLER_API_KEY` secret (the old one
-  401/403s); the live build is pushed via LOCAL butler meanwhile.
+- **`shot_harness.js` = headless GAMEPLAY SCREENSHOT + GIF generator.** Runs the sim + the
+  FULL fluid render pipeline (mirrors `fluidRender.ts`, procedural env cubemap + a **wood/
+  granite tabletop** patched into a copy of `fluid.wgsl`) to an offscreen texture, reads
+  pixels back, writes a **PNG** (DEFLATE via `CompressionStream`) or an animated **GIF**
+  (self-contained median-cut + LZW encoder — NO remote deps). No browser/canvas. Env knobs:
+  `SHOT_COLOR/OPACITY/GLOSS/FOAM`, `SHOT_YAW/PITCH/DIST`, `SHOT_W/H`, `SHOT_PRESS=1`,
+  `SHOT_MODE=sphere`, `SHOT_BG=wood|granite`, `SHOT_GIF=1` (+`GIF_FRAMES/EVERY/DELAY/TY/TZ`,
+  the drop-jiggle). `--allow-write`. Verify GIFs with PIL (`im.seek` each frame). Output in
+  `media/` (cover/screenshots + `jiggle.gif`). The itch page gallery is dashboard-only —
+  butler can't set it; the user uploads `media/*`. NOTE: itch CI auto-deploy needs a fresh
+  `BUTLER_API_KEY` secret (old one 401/403s); live build pushed via LOCAL butler meanwhile.
 - **Setup (one-time):** `cd <a temp dir>; npm init -y; npm install deno` →
   `./node_modules/.bin/deno run --unstable-webgpu --allow-read <harness>.js`. The harnesses
   read shaders by **absolute path** (`d:/SunnydayTech/Studio/Slim3D/mls-mpm`), so copy them

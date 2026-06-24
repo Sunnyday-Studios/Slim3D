@@ -94,6 +94,19 @@ const SWATCHES: string[] = [
 
 const DEFAULT_PRESET_INDEX = 1 // Glossy (validated default visc/gravity)
 
+// The tabletop the slime rests on (rendered floor). CC0 textures in public/textures.
+// url=null => no floor, just the dark backdrop. The renderer raycasts the y=0 plane.
+const SURFACES: { name: string; url: string | null }[] = [
+  { name: 'Wood', url: 'textures/wood.jpg' },
+  { name: 'Marble', url: 'textures/marble.jpg' },
+  { name: 'Cream', url: 'textures/marble-cream.jpg' },
+  { name: 'Granite', url: 'textures/granite.jpg' },
+  { name: 'Concrete', url: 'textures/concrete.jpg' },
+  { name: 'Terrazzo', url: 'textures/terrazzo.jpg' },
+  { name: 'None', url: null },
+]
+const DEFAULT_SURFACE_INDEX = 0 // Wood
+
 export class Controls {
   private sim: MLSMPMSimulator
   private renderer: FluidRenderer
@@ -113,6 +126,7 @@ export class Controls {
 
   // DOM refs
   private typeButtons: HTMLButtonElement[] = []
+  private surfaceButtons: HTMLButtonElement[] = []
   private muEl!: HTMLInputElement
   private lambdaEl!: HTMLInputElement
   private flowEl!: HTMLInputElement
@@ -129,6 +143,7 @@ export class Controls {
     this.audio = audio
     this.buildTypeButtons()
     this.buildSwatches()
+    this.buildSurfaceButtons()
     this.bindSliders()
     this.bindColor()
     this.bindFoam()
@@ -136,6 +151,28 @@ export class Controls {
     this.bindMute()
     // apply default type on load (also primes the audio profile to the default type)
     this.applyPreset(DEFAULT_PRESET_INDEX)
+    // apply the default tabletop surface (streams the image in, then enables the floor)
+    this.applySurface(DEFAULT_SURFACE_INDEX)
+  }
+
+  // ---- SURFACE (tabletop) segmented buttons ----
+  private buildSurfaceButtons() {
+    const host = document.getElementById('slSurface') as HTMLDivElement | null
+    if (!host) return
+    host.innerHTML = ''
+    SURFACES.forEach((s, i) => {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.textContent = s.name
+      b.addEventListener('click', () => this.applySurface(i))
+      this.surfaceButtons.push(b)
+      host.appendChild(b)
+    })
+  }
+
+  private applySurface(idx: number) {
+    this.surfaceButtons.forEach((b, i) => b.classList.toggle('active', i === idx))
+    void this.renderer.setSurface(SURFACES[idx].url)
   }
 
   // ---- TYPE segmented buttons ----

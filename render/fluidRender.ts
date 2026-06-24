@@ -42,6 +42,19 @@ export class FluidRenderer {
         // bytes 24..31 are padding (std140 16-byte alignment)
     }
 
+    // Floor SURFACE the slime rests on (an image: marble/wood/granite/...) bound at fluid
+    // binding 6, sampled by a repeat sampler (binding 8). Scene uniform (binding 7, 32B):
+    //   { bg vec3f@0 (dark backdrop), surfaceScale f32@12, surfaceEnabled f32@16, pad }.
+    surfaceTexture!: GPUTexture
+    surfaceSampler!: GPUSampler
+    sceneUniformBuffer!: GPUBuffer
+    private sceneValues = new ArrayBuffer(32)
+    private sceneViews = {
+        bg:             new Float32Array(this.sceneValues, 0, 3),
+        surfaceScale:   new Float32Array(this.sceneValues, 12, 1),
+        surfaceEnabled: new Float32Array(this.sceneValues, 16, 1),
+    }
+
     device: GPUDevice
     constructor(
         device: GPUDevice, canvas: HTMLCanvasElement, presentationFormat: GPUTextureFormat,
@@ -269,6 +282,21 @@ export class FluidRenderer {
         })
         this.setStyle([0.5, 0.5, 0.5], 0.95, 0.85, 0.0)
 
+        // Floor surface texture (filled by setSurface() at runtime), a REPEAT sampler so
+        // the tabletop tiles across the floor, and the scene uniform (dark backdrop +
+        // tile scale). surfaceEnabled starts 0 so there's no black floor before the first
+        // image loads; setSurface() flips it on.
+        this.surfaceTexture = device.createTexture({
+            label: 'surface texture', size: [1024, 1024, 1], format: 'rgba8unorm',
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        })
+        this.surfaceSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat' })
+        this.sceneUniformBuffer = device.createBuffer({ label: 'scene uniform', size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+        this.sceneViews.bg.set([0.15, 0.15, 0.17]) // dark backdrop for contrast
+        this.sceneViews.surfaceScale[0] = 0.03
+        this.sceneViews.surfaceEnabled[0] = 0
+        device.queue.writeBuffer(this.sceneUniformBuffer, 0, this.sceneValues)
+
         // bindGroup
         this.depthMapBindGroup = device.createBindGroup({
             label: 'depth map bind group', 
@@ -337,8 +365,11 @@ export class FluidRenderer {
               { binding: 1, resource: this.depthMapTextureView },
               { binding: 2, resource: { buffer: renderUniformBuffer } },
               { binding: 3, resource: this.thicknessTextureView },
-              { binding: 4, resource: cubemapTextureView }, 
+              { binding: 4, resource: cubemapTextureView },
               { binding: 5, resource: { buffer: this.styleUniformBuffer } },
+              { binding: 6, resource: this.surfaceTexture.createView() },
+              { binding: 7, resource: { buffer: this.sceneUniformBuffer } },
+              { binding: 8, resource: this.surfaceSampler },
             ],
         })
 
@@ -362,6 +393,29 @@ export class FluidRenderer {
         this.styleViews.foam[0] = c01(foam)
         this.device.queue.writeBuffer(this.styleUniformBuffer, 0, this.styleValues)
     }
+
+    private writeScene() { this.device.queue.writeBuffer(this.sceneUniformBuffer, 0, this.sceneValues) }
+
+    // Set the tabletop the slime rests on. `url` = an image under public/textures (e.g.
+    // 'textures/marble.jpg'); null = no floor (just the dark backdrop). Async: the image
+    // streams in, then surfaceEnabled flips on. Same surfaceTexture/view => no rebind.
+    async setSurface(url: string | null) {
+        if (!url) { this.sceneViews.surfaceEnabled[0] = 0; this.writeScene(); return }
+        try {
+            const bmp = await createImageBitmap(await (await fetch(url)).blob())
+            this.device.queue.copyExternalImageToTexture(
+                { source: bmp }, { texture: this.surfaceTexture },
+                [Math.min(1024, bmp.width), Math.min(1024, bmp.height)],
+            )
+            this.sceneViews.surfaceEnabled[0] = 1
+            this.writeScene()
+        } catch (e) { console.error('setSurface failed:', e) }
+    }
+
+    // Dark backdrop color (rgb 0..1) shown where the camera ray misses the floor.
+    setBackdrop(rgb: number[]) { this.sceneViews.bg.set([rgb[0], rgb[1], rgb[2]]); this.writeScene() }
+    // World-units -> texture-uv tiling for the floor (smaller = larger tiles).
+    setSurfaceScale(s: number) { this.sceneViews.surfaceScale[0] = s; this.writeScene() }
 
 
     execute(context: GPUCanvasContext, commandEncoder: GPUCommandEncoder, 

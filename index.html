@@ -82,14 +82,14 @@
       .sl-group > .sl-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; opacity: 0.65; }
 
       /* TYPE segmented buttons */
-      #slType { display: flex; flex-wrap: wrap; gap: 6px; }
-      #slType button {
+      #slType, #slSurface { display: flex; flex-wrap: wrap; gap: 6px; }
+      #slType button, #slSurface button {
         all: unset; cursor: pointer; text-align: center; flex: 1 1 auto;
         min-width: 56px; font-size: 12px; padding: 7px 8px; border-radius: 8px;
         background: rgba(86, 209, 196, 0.12); border: 1px solid rgba(86, 209, 196, 0.32);
         color: #aef4ea;
       }
-      #slType button.active {
+      #slType button.active, #slSurface button.active {
         background: rgba(86, 209, 196, 0.40); border-color: rgba(120, 240, 225, 0.8);
         color: #ffffff; font-weight: 600;
       }
@@ -223,6 +223,11 @@
             <input type="color" id="slColor" value="#f24c8c" />
             <span style="font-size:12px;opacity:0.7">Custom color</span>
           </div>
+        </div>
+
+        <div class="sl-group">
+          <div class="sl-label">Surface (tabletop)</div>
+          <div id="slSurface"><!-- buttons injected by controls.ts --></div>
         </div>
 
         <div class="sl-group">

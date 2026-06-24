@@ -4,6 +4,9 @@
 @group(0) @binding(3) var thickness_texture: texture_2d<f32>;
 @group(0) @binding(4) var envmap_texture: texture_cube<f32>;
 @group(0) @binding(5) var<uniform> style: SlimeStyle;
+@group(0) @binding(6) var surface_texture: texture_2d<f32>;   // the tabletop the slime rests on
+@group(0) @binding(7) var<uniform> scene: SceneUniform;
+@group(0) @binding(8) var surface_sampler: sampler;            // repeat-addressed (tiles)
 
 struct RenderUniforms {
     texel_size: vec2f, 
@@ -28,6 +31,18 @@ struct SlimeStyle {
     foam: f32,
     _pad0: f32,
     _pad1: f32,
+}
+
+// Floor + backdrop (32B std140). `bg` = dark backdrop where the camera ray misses the
+// floor (and far-distance fade target) — gives contrast. `surfaceScale` = world-units ->
+// texture-uv tiling. `surfaceEnabled` < 0.5 => no floor (just `bg` everywhere).
+struct SceneUniform {
+    bg: vec3f,
+    surfaceScale: f32,
+    surfaceEnabled: f32,
+    _p0: f32,
+    _p1: f32,
+    _p2: f32,
 }
 
 struct FragmentInput {
@@ -58,11 +73,33 @@ fn hash21(p: vec2f) -> f32 {
     return fract(q.x * q.y);
 }
 
+// Color of the scene behind/under the slime for a given screen uv: raycast the camera
+// ray to the FLOOR plane (y=0, the sim floor the slime rests on) and sample the surface
+// texture there (perspective-correct tabletop). Rays that miss (head up past the horizon)
+// get the dark backdrop; the floor also fades into the backdrop with distance for depth.
+fn surfaceColor(uv: vec2f) -> vec3f {
+    if (scene.surfaceEnabled < 0.5) { return scene.bg; }
+    let ndc: vec2f = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    let vn: vec4f = uniforms.inv_projection_matrix * vec4f(ndc, 0.0, 1.0);
+    let vf: vec4f = uniforms.inv_projection_matrix * vec4f(ndc, 1.0, 1.0);
+    let wn: vec3f = (uniforms.inv_view_matrix * vec4f(vn.xyz / vn.w, 1.0)).xyz;
+    let wf: vec3f = (uniforms.inv_view_matrix * vec4f(vf.xyz / vf.w, 1.0)).xyz;
+    let o: vec3f = wn;
+    let d: vec3f = normalize(wf - wn);
+    if (d.y > -1e-4) { return scene.bg; }                 // not heading down -> backdrop
+    let t: f32 = -o.y / d.y;
+    if (t <= 0.0) { return scene.bg; }
+    let hit: vec3f = o + t * d;
+    let surf: vec3f = textureSampleLevel(surface_texture, surface_sampler, hit.xz * scene.surfaceScale, 0.0).rgb;
+    let fade: f32 = clamp(t / 240.0, 0.0, 1.0);            // fade to backdrop near the horizon
+    return mix(surf, scene.bg, fade * fade);
+}
+
 @fragment
 fn fs(input: FragmentInput) -> @location(0) vec4f {
     var depth: f32 = abs(textureLoad(texture, vec2u(input.iuv), 0).r);
 
-    let bgColor: vec3f = vec3f(0.8, 0.8, 0.8);
+    let bgColor: vec3f = surfaceColor(input.uv);
 
     if (depth >= 1e4 || depth <= 0.) {
         return vec4f(bgColor, 1.);

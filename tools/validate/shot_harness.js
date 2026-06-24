@@ -285,16 +285,7 @@ const sp = {
 // render shaders/pipelines (mirror fluidRender.ts)
 const rMod = (f) => device.createShaderModule({ code: rd(REND, f) });
 const mDepth = rMod("depthMap.wgsl"), mBilat = rMod("bilateral.wgsl");
-// fluid.wgsl, modified to sample a BACKGROUND TEXTURE (the wood/granite tabletop) instead
-// of the hard-coded flat gray. bgColor feeds BOTH the empty background AND the slime's
-// refraction, so the slime tints the wood beneath it. (Harness-only string patch; the
-// game's render/fluid.wgsl is untouched.)
-let fluidSrc = rd(REND, "fluid.wgsl");
-fluidSrc = fluidSrc.replace("@group(0) @binding(5) var<uniform> style: SlimeStyle;",
-  "@group(0) @binding(5) var<uniform> style: SlimeStyle;\n@group(0) @binding(6) var bg_texture: texture_2d<f32>;");
-fluidSrc = fluidSrc.replace("let bgColor: vec3f = vec3f(0.8, 0.8, 0.8);",
-  "let bgColor: vec3f = textureSampleLevel(bg_texture, texture_sampler, input.uv, 0.0).rgb;");
-const mFluid = device.createShaderModule({ code: fluidSrc });
+const mFluid = rMod("fluid.wgsl");   // real game shader (raycasts the floor + backdrop)
 const mFull = rMod("fullScreen.wgsl"), mThick = rMod("thicknessMap.wgsl"), mGauss = rMod("gaussian.wgsl");
 const mSphere = rMod("sphere.wgsl");
 const MODE = E("SHOT_MODE") || "fluid";
@@ -370,18 +361,17 @@ for (let face = 0; face < 6; face++) {
 }
 const cubeTV = cubeTex.createView({ dimension: "cube" });
 
-// background sampled by the (patched) fluid shader's bgColor. wood/granite = textured
-// tabletop; flat = a solid dark color (huge uniform area => GIFs compress tiny).
-const BG_KIND = E("SHOT_BG") || "wood";
-let bgPx;
-if (BG_KIND === "flat") {
-  const c = (E("SHOT_BGCOLOR") || "34,30,28").split(",").map(Number);
-  bgPx = new Uint8Array(W * H * 4);
-  for (let i = 0; i < W * H; i++) { bgPx[i * 4] = c[0]; bgPx[i * 4 + 1] = c[1]; bgPx[i * 4 + 2] = c[2]; bgPx[i * 4 + 3] = 255; }
-} else bgPx = tableTexture(W, H, BG_KIND);
-const bgTex = device.createTexture({ size: [W, H, 1], format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-device.queue.writeTexture({ texture: bgTex }, bgPx, { bytesPerRow: W * 4, rowsPerImage: H }, [W, H, 1]);
-const bgTV = bgTex.createView();
+// FLOOR surface texture (real image, raw RGBA) + scene uniform (dark backdrop, tile scale).
+// matches the game: fluid.wgsl raycasts the y=0 floor and samples this; misses = backdrop.
+const SURF_PATH = E("SHOT_SURFACE") || "d:/tmp/slim3d-validate/marble.rgba";
+const SURF_SIZE = +(E("SHOT_SURFACE_SIZE") || 512);
+const surfTex = device.createTexture({ size: [SURF_SIZE, SURF_SIZE, 1], format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+device.queue.writeTexture({ texture: surfTex }, new Uint8Array(Deno.readFileSync(SURF_PATH)), { bytesPerRow: SURF_SIZE * 4, rowsPerImage: SURF_SIZE }, [SURF_SIZE, SURF_SIZE, 1]);
+const surfTV = surfTex.createView();
+const surfSampler = device.createSampler({ magFilter: "linear", minFilter: "linear", addressModeU: "repeat", addressModeV: "repeat" });
+const bgCol = (E("SHOT_BGCOLOR") || "0.16,0.16,0.18").split(",").map(Number);
+const sceneBuf = B(32, U | CD);
+device.queue.writeBuffer(sceneBuf, 0, new Float32Array([bgCol[0], bgCol[1], bgCol[2], +(E("SHOT_SURFSCALE") || 0.03), +(E("SHOT_SURFON") ?? 1), 0, 0, 0]));
 
 // bind groups
 const bg = (pl, entries) => device.createBindGroup({ layout: pl.getBindGroupLayout(0), entries });
@@ -400,7 +390,7 @@ const depthMapBG = bg(depthMapPipe, [eb(0, posvelBuf), eb(1, rUni)]);
 const depthFiltBG = [bg(depthFiltPipe, [e(1, depthMapTV), eb(2, fxBuf)]), bg(depthFiltPipe, [e(1, tmpDepthTV), eb(2, fyBuf)])];
 const thickMapBG = bg(thickMapPipe, [eb(0, posvelBuf), eb(1, rUni)]);
 const thickFiltBG = [bg(thickFiltPipe, [e(1, thickTV), eb(2, fxBuf)]), bg(thickFiltPipe, [e(1, tmpThickTV), eb(2, fyBuf)])];
-const fluidBG = bg(fluidPipe, [e(0, sampler), e(1, depthMapTV), eb(2, rUni), e(3, thickTV), e(4, cubeTV), eb(5, styleBuf), e(6, bgTV)]);
+const fluidBG = bg(fluidPipe, [e(0, sampler), e(1, depthMapTV), eb(2, rUni), e(3, thickTV), e(4, cubeTV), eb(5, styleBuf), e(6, surfTV), eb(7, sceneBuf), e(8, surfSampler)]);
 const sphereBG = bg(spherePipe, [eb(0, posvelBuf), eb(1, rUni)]);
 
 // sim step

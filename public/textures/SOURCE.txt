@@ -1,0 +1,9 @@
+Tabletop surface textures — Color/albedo maps from ambientCG (https://ambientcg.com),
+licensed CC0 1.0 (public domain): free for any use, commercial included, no attribution
+required. Resized to 1024x1024 JPG.
+  marble.jpg        = Marble006   (black/white veined)
+  marble-cream.jpg  = Marble020   (cream)
+  wood.jpg          = WoodFloor051
+  concrete.jpg      = Concrete034
+  granite.jpg       = Rock035      (dark speckled stone)
+  terrazzo.jpg      = Terrazzo009

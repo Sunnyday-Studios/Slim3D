@@ -169,46 +169,93 @@ function lzwEncode(minCodeSize, pixels) {
   return out;
 }
 function encodeGIF(w, h, framesIdx, palette, delayCs) {
+  // FRAME DIFFERENCING: a static background (the tabletop) is encoded only in frame 0;
+  // later frames store just the bbox of CHANGED pixels, with unchanged ones set to a
+  // reserved TRANSPARENT index and disposal=1 (do not dispose) so the prior frame shows
+  // through. Keeps a textured-background GIF tiny. (palette must be <=255 to leave the
+  // transparent slot free.)
+  const TRANS = palette.length;                                       // reserved transparent index
   const b = []; const u16 = (n) => b.push(n & 255, (n >> 8) & 255);
   const str = (s) => { for (let i = 0; i < s.length; i++) b.push(s.charCodeAt(i)); };
-  let bits = 1; while ((1 << bits) < palette.length) bits++;           // gct size exponent
+  let bits = 1; while ((1 << bits) < palette.length + 1) bits++;       // room for TRANS
   const gctSize = 1 << bits, minCodeSize = Math.max(2, bits);
   str("GIF89a"); u16(w); u16(h); b.push(0x80 | ((bits - 1) << 4) | (bits - 1), 0, 0);
   for (let i = 0; i < gctSize; i++) { const c = palette[i] || [0, 0, 0]; b.push(c[0], c[1], c[2]); }
   b.push(0x21, 0xff, 0x0b); str("NETSCAPE2.0"); b.push(0x03, 0x01); u16(0); b.push(0x00); // loop forever
-  for (const idx of framesIdx) {
-    b.push(0x21, 0xf9, 0x04, 0x00); u16(delayCs); b.push(0x00, 0x00);   // graphic control ext
-    b.push(0x2c); u16(0); u16(0); u16(w); u16(h); b.push(0x00);          // image descriptor
+  let prev = null;
+  for (let fi = 0; fi < framesIdx.length; fi++) {
+    const cur = framesIdx[fi];
+    let x0 = 0, y0 = 0, bw = w, bh = h, sub, transFlag = 0;
+    if (fi === 0) { sub = cur; }                                       // full opaque base
+    else {
+      let minx = w, miny = h, maxx = -1, maxy = -1;
+      const diff = new Uint8Array(w * h);
+      for (let i = 0; i < w * h; i++) {
+        if (cur[i] === prev[i]) diff[i] = TRANS;
+        else { diff[i] = cur[i]; const px = i % w, py = (i / w) | 0; if (px < minx) minx = px; if (px > maxx) maxx = px; if (py < miny) miny = py; if (py > maxy) maxy = py; }
+      }
+      transFlag = 1;
+      if (maxx < 0) { bw = 1; bh = 1; sub = new Uint8Array([TRANS]); }
+      else {
+        x0 = minx; y0 = miny; bw = maxx - minx + 1; bh = maxy - miny + 1;
+        sub = new Uint8Array(bw * bh);
+        for (let yy = 0; yy < bh; yy++) for (let xx = 0; xx < bw; xx++) sub[yy * bw + xx] = diff[(y0 + yy) * w + (x0 + xx)];
+      }
+    }
+    b.push(0x21, 0xf9, 0x04, (1 << 2) | transFlag); u16(delayCs); b.push(transFlag ? TRANS : 0, 0x00); // GCE: disposal=1
+    b.push(0x2c); u16(x0); u16(y0); u16(bw); u16(bh); b.push(0x00);    // image descriptor (sub-rect)
     b.push(minCodeSize);
-    const lzw = lzwEncode(minCodeSize, idx);
+    const lzw = lzwEncode(minCodeSize, sub);
     for (let i = 0; i < lzw.length; i += 255) { const c = lzw.slice(i, i + 255); b.push(c.length); for (const x of c) b.push(x); }
     b.push(0x00);
+    prev = cur;
   }
   b.push(0x3b);
   return Uint8Array.from(b);
 }
 
-// ---------- procedural tabletop (wood / granite), medium-dark for contrast ----------
+// ---------- procedural tabletop (wood / granite / marble) ----------
 function tableTexture(w, h, kind) {
   const px = new Uint8Array(w * h * 4);
   const hash = (x, y) => { const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return n - Math.floor(n); };
+  const vnoise = (x, y) => { // value noise, smooth-interpolated
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+    const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
+    const ux = xf * xf * (3 - 2 * xf), uy = yf * yf * (3 - 2 * yf);
+    return a * (1 - ux) * (1 - uy) + b * ux * (1 - uy) + c * (1 - ux) * uy + d * ux * uy;
+  };
+  const turb = (x, y) => { let t = 0, f = 1, a = 1; for (let o = 0; o < 6; o++) { t += Math.abs(vnoise(x * f, y * f) - 0.5) * 2 * a; f *= 2; a *= 0.5; } return t; };
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const u = x / w, v = y / h; let r, g, b;
-    if (kind === "granite") {
-      let s = 0.5 + (hash(x * 0.7, y * 0.7) - 0.5) * 0.5 + (hash(x * 3.1, y * 3.1) - 0.5) * 0.3;
-      s = Math.max(0, Math.min(1, s));
-      const base = 58 + s * 80;            // dark speckled stone
-      r = base * 0.97; g = base; b = base * 1.06;
-      if (hash(x * 5.3, y * 7.1) > 0.93) { r += 45; g += 45; b += 50; } // flecks
-    } else {                                // walnut: wavy horizontal grain + fibers
+    if (kind === "marble") {
+      // classic veined marble: a sine band warped by fractal turbulence -> organic veins.
+      const sx = u * 5.5, sy = v * 4.2;
+      const tb = turb(sx, sy);
+      const m = Math.sin((sx + sy * 0.4 + tb * 2.4) * 2.0);   // primary vein field [-1,1]
+      let L = 70 + 175 * Math.pow(0.5 + 0.5 * m, 0.75);        // light base, dark veins
+      // a few sharp dark hairline veins where the warped field crosses zero
+      L -= Math.pow(1 - Math.abs(m), 14) * 70;
+      L -= Math.pow(1 - Math.abs(Math.sin((sy * 1.7 + turb(sy, sx) * 2.0) * 2.0)), 18) * 55;
+      L += (hash(x * 1.3, y * 1.3) - 0.5) * 14;                // fine grain
+      L = Math.max(28, Math.min(250, L));
+      r = L * 0.99; g = L; b = L * 1.03;                       // faint cool tint
+    } else if (kind === "granite") {
+      // high-contrast salt-and-pepper stone: black + white grains over mottled mid-gray
+      const mott = vnoise(x * 0.18, y * 0.18);
+      let base = 55 + mott * 120 + (hash(x, y) - 0.5) * 130;   // strong per-pixel speckle
+      if (hash(x * 2.7, y * 3.9) > 0.972) base = 235;          // bright white flecks
+      if (hash(x * 4.1, y * 1.7) < 0.028) base = 18;           // black flecks
+      base = Math.max(10, Math.min(245, base));
+      r = base * 0.98; g = base; b = base * 1.05;
+    } else {                                                   // walnut wood
       const ring = 0.5 + 0.5 * Math.sin((v * 26 + Math.sin(u * 5.0) * 1.2 + hash(0, Math.floor(v * 26)) * 2) * Math.PI);
       const fiber = 0.5 + 0.5 * Math.sin(v * 220 + u * 4);
       const t = 0.46 + 0.30 * ring + 0.10 * fiber + 0.10 * (hash(x * 0.5, y * 2.0) - 0.5);
       r = 120 * t; g = 78 * t; b = 46 * t;
     }
-    const light = 1.0 + 0.18 * (1 - (u * 0.6 + v));        // soft upper-left light
-    const dx = u - 0.5, dy = v - 0.55, vig = 1 - 1.15 * (dx * dx + dy * dy); // vignette
-    const m = Math.max(0.22, light * vig);
+    const light = 1.0 + 0.16 * (1 - (u * 0.6 + v));            // soft upper-left light
+    const dx = u - 0.5, dy = v - 0.55, vig = 1 - 0.9 * (dx * dx + dy * dy); // gentle vignette
+    const m = Math.max(0.3, light * vig);
     const o = (y * w + x) * 4;
     px[o] = Math.min(255, r * m); px[o + 1] = Math.min(255, g * m); px[o + 2] = Math.min(255, b * m); px[o + 3] = 255;
   }
@@ -323,10 +370,17 @@ for (let face = 0; face < 6; face++) {
 }
 const cubeTV = cubeTex.createView({ dimension: "cube" });
 
-// background tabletop texture sampled by the (patched) fluid shader's bgColor
+// background sampled by the (patched) fluid shader's bgColor. wood/granite = textured
+// tabletop; flat = a solid dark color (huge uniform area => GIFs compress tiny).
 const BG_KIND = E("SHOT_BG") || "wood";
+let bgPx;
+if (BG_KIND === "flat") {
+  const c = (E("SHOT_BGCOLOR") || "34,30,28").split(",").map(Number);
+  bgPx = new Uint8Array(W * H * 4);
+  for (let i = 0; i < W * H; i++) { bgPx[i * 4] = c[0]; bgPx[i * 4 + 1] = c[1]; bgPx[i * 4 + 2] = c[2]; bgPx[i * 4 + 3] = 255; }
+} else bgPx = tableTexture(W, H, BG_KIND);
 const bgTex = device.createTexture({ size: [W, H, 1], format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-device.queue.writeTexture({ texture: bgTex }, tableTexture(W, H, BG_KIND), { bytesPerRow: W * 4, rowsPerImage: H }, [W, H, 1]);
+device.queue.writeTexture({ texture: bgTex }, bgPx, { bytesPerRow: W * 4, rowsPerImage: H }, [W, H, 1]);
 const bgTV = bgTex.createView();
 
 // bind groups
@@ -447,7 +501,7 @@ if (E("SHOT_GIF") === "1") {
   // shared palette from sampled pixels across the sequence, then map + LZW each frame
   const samples = [];
   for (const f of rgbaFrames) for (let i = 0; i < W * H; i += 137) samples.push([f[i * 4], f[i * 4 + 1], f[i * 4 + 2]]);
-  const palette = medianCut(samples, 256);
+  const palette = medianCut(samples, 255); // 255 colors + 1 reserved transparent index
   const lut = buildLUT(palette);
   const framesIdx = rgbaFrames.map((f) => mapFrame(f, lut));
   const gif = encodeGIF(W, H, framesIdx, palette, Math.round(DELAY / 10));

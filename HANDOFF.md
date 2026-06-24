@@ -76,8 +76,11 @@ headless WebGPU** (wgpu + the same `naga` validator) on the box's real NVIDIA GP
   pixels back, writes a **PNG** (DEFLATE via `CompressionStream`) or an animated **GIF**
   (self-contained median-cut + LZW encoder — NO remote deps). No browser/canvas. Env knobs:
   `SHOT_COLOR/OPACITY/GLOSS/FOAM`, `SHOT_YAW/PITCH/DIST`, `SHOT_W/H`, `SHOT_PRESS=1`,
-  `SHOT_MODE=sphere`, `SHOT_BG=wood|granite`, `SHOT_GIF=1` (+`GIF_FRAMES/EVERY/DELAY/TY/TZ`,
-  the drop-jiggle). `--allow-write`. Verify GIFs with PIL (`im.seek` each frame). Output in
+  `SHOT_MODE=sphere`, `SHOT_BG=marble|wood|granite|flat` (+`SHOT_BGCOLOR`), `SHOT_GIF=1`
+  (+`GIF_FRAMES/EVERY/DELAY/TY/TZ`, the drop-jiggle). The GIF encoder does **frame
+  differencing** (static bg encoded once; later frames = changed-bbox sub-rect + transparent
+  + disposal=1) so a textured-bg GIF stays small (marble 600×450×40 ≈ 1.6 MB < 3 MB).
+  `--allow-write`. Verify GIFs with PIL (`im.seek` each frame). Output in
   `media/` (cover/screenshots + `jiggle.gif`). The itch page gallery is dashboard-only —
   butler can't set it; the user uploads `media/*`. NOTE: itch CI auto-deploy needs a fresh
   `BUTLER_API_KEY` secret (old one 401/403s); live build pushed via LOCAL butler meanwhile.
